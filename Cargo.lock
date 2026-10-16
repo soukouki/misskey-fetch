@@ -875,8 +875,14 @@ dependencies = [
 name = "misskey-fetch"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chrono",
  "chrono-tz",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "idna",
  "reqwest",
  "rmcp",
@@ -885,6 +891,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "uuid",
  "wiremock",
 ]
 

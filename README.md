@@ -1,15 +1,15 @@
 # misskey-fetch
 
-Misskey を読むだけの MCP サーバー。stdio で JSON-RPC を受け取り、3つのツールを MCP クライアント（LLM）に提供する。書き込みエンドポイントは呼ばない。
+Misskey を読むだけの MCP サーバー。JSON-RPC を受け取り、3つのツールを MCP クライアント（LLM）に提供する。書き込みエンドポイントは呼ばない。
 
-Rust（rmcp / reqwest / chrono-tz / schemars / serde）。
+Rust（rmcp / reqwest / chrono-tz / schemars / serde）。トランスポートは stdio（既定）と SSE。
 
 ## 実行
 
 | 環境変数 | 必須 | 内容 |
 |---|---|---|
 | `MISSKEY_TOKEN` | はい | 読み取り権限のトークン。空だと起動時にエラー |
-| `MISSKEY_API_URL` | はい | `https://` の API ベース URL。末尾スラッシュは除去。http は拒否、リダイレクトは追わない（token の別 origin 漏洩防止） |
+| `MISSKEY_API_URL` | はい | `https://` の API ベース URL。末尾スラッシュは除去。http は拒否、リダイレクトは追わない（token が別 origin に漏れないため） |
 | `TZ` | はい | IANA タイムゾーン名（例 `Asia/Tokyo`）。未設定・不正は起動エラー。chrono-tz は env を自動参照しないので明示 parse する |
 
 `MISSKEY_API_URL` のホスト部は `instance_host` として保持する（lowercase + punycode）。`handle` の host 省略時に使う。
@@ -19,11 +19,16 @@ cargo run --locked
 ```
 
 ```sh
-docker build -t misskey-fetch .
-docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
+cargo run --locked -- --transport sse --port 8080
 ```
 
-stdout は JSON-RPC のみ。起動情報（`api_base` と `tz`）と 429 の backoff は stderr。token は stderr にも出さない。
+```sh
+docker build -t misskey-fetch .
+docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
+docker run -d --rm -p 8080:8080 -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch --transport sse --host 0.0.0.0 --port 8080
+```
+
+stdio では stdout は JSON-RPC のみ。ログ（起動情報、429 の backoff、SSE セッションの開閉）は stderr。token は stderr にも出さない。
 
 MCP クライアントの設定例:
 
@@ -40,6 +45,41 @@ MCP クライアントの設定例:
     }
   }
 }
+```
+
+## トランスポート
+
+| 引数 | 内容 |
+|---|---|
+| `--transport` | `stdio`（既定）\| `sse` |
+| `--host` | SSE の bind アドレス（既定 `127.0.0.1`） |
+| `--port` | SSE のポート（既定 `8080`） |
+
+`--host` / `--port` は SSE のときだけ効く。stdio で指定すると stderr に警告を出す。`-h` / `--help` で usage。`--flag=value` 形式も受け付ける。
+
+### SSE（legacy HTTP + Server-Sent Events）
+
+rmcp 3.5.1 には SSE サーバートランスポートがない（`transport-sse-server` は #562 で削除され、後継は streamable HTTP）。レガシー HTTP+SSE プロトコルを `src/sse.rs` で自前実装している。
+
+- `GET /sse` → `event: endpoint` で message endpoint を伝え、以降は `event: message` で応答を流す
+- `POST /messages?sessionId=...`（`/message` も受け付ける）→ JSON-RPC を読み `202 Accepted`。JSON-RPC の応答は SSE 側に出る（POST の body には出ない）
+- handshake（`initialize`）は endpoint 受信後に行われる。ハンドラは handshake を待たずに SSE 応答を返す
+- セッションは SSE 接続が切れた時点で掃除される（切れた sessionId への POST は 404）。接続ごとに service を 1 つ立てる。
+- `Content-Type: text/event-stream`、`Cache-Control: no-cache`。request body は 1 MiB まで。
+
+streamable HTTP（`POST /mcp`）しかサポートしないクライアントには繋がらない。
+
+```json
+{
+  "mcpServers": {
+    "misskey": { "url": "http://127.0.0.1:8080/sse" }
+  }
+}
+```
+
+```sh
+MISSKEY_TOKEN=... MISSKEY_API_URL=https://misskey.io/api TZ=Asia/Tokyo \
+  misskey-fetch --transport sse --host 127.0.0.1 --port 8080
 ```
 
 ## ツール
@@ -104,11 +144,11 @@ MCP クライアントの設定例:
 }
 ```
 
-- `cw` は警告文（UI で常時表示）、`text` はその折りたまれた本文。
+- `cw` は警告文（UI で常時表示）、`text` は cw の裏に折りたたまれた本文。
 - `isHidden` はノート固有の property ではなく viewer 相対の relation（policy 由来の隠蔽）。
 - `userId` は view に入れない。LLM に見せる識別子は `name` と `handle` だけ。
 - `reply` / `renote` は 4 状態の tagged object: `none` / `notJoined{id}`（relation はあるが応答に含まれなかった）/ `notFound{id}`（relation があり detail gate は通過したが対象がない）/ `present{id, note}`。入れ子 note の renote chain は深さ 10 で打ち切り、打ち切り点は `notJoined`。
-- `truncated` / `nextCursor` / `message` は省略が発生した場合だけ入る。`message` は英語の文字列で、続きの `untilId` を書く。
+- `truncated` / `nextCursor` / `message` は省略が発生した場合だけ入る。`message` は英語の文字列で、続きの `untilId` を示す。
 
 ## 日付引数
 
@@ -120,7 +160,7 @@ MCP クライアントの設定例:
 - 小数秒は任意桁数（9桁超は nanosecond 分解能で切り捨て）
 - DST で曖昧・非存在の壁時計時刻は `latest()` で解決
 
-拒否: 月日1桁、不正日付、範囲外（`25:00` / `12:60` / leap second `:60`）、slash 区切り、相対表現（`now`, `-1d`）、basic format（`20240203`）、週日付、space 区切り、reduced precision。拒否時のメッセージは英語の `Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}`。
+拒否: 月日 1 桁、不正日付、範囲外（`25:00` / `12:60` / leap second `:60`）、slash 区切り、相対表現（`now`, `-1d`）、basic format（`20240203`）、週日付、space 区切り、reduced precision。拒否時のメッセージは英語の `Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}`。
 
 境界は排他。日付のみ入力は `TZ` の 0 時境界なので、境界ちょうど（`00:00:00.000`）のノートは除外される。API で粗く絞り込み、返ってきた件数を `createdAt` で厳密検証して範囲外を落とす。
 
@@ -135,7 +175,7 @@ MCP クライアントの設定例:
 
 要求 limit は 1..1000 に clamp。1リクエストの page size は 100（Misskey API の上限）。ページネーションは最大 10 ページ。停止条件は件数到達、空ページ（データ尽き）、または日付境界到達。データ尽きは `truncated` にならない。
 
-ページネーションは `untilId`（前回最後のノート）でサーバ側に行う。remote ユーザーの `users/notes` は ID 順で返るため、ID 方式が異なると ID 順 ≠ 時系列順。返却前に `createdAt` 降順に再ソートする。
+ページネーションは `untilId`（前回最後のノート）でサーバ側で行う。remote ユーザーの `users/notes` は ID 順で返るため、ID 方式が異なると ID 順 ≠ 時系列順。返却前に `createdAt` 降順に再ソートする。
 
 ## エラー
 
@@ -145,7 +185,7 @@ LLM 向けエラーは JSON-RPC の error ではなく `isError: true` のツー
 - `Parameter error: {message}`（handle 不正、`after > before`）
 - `User not found: {handle}`（`NO_SUCH_USER`）
 - `Could not resolve remote user: {handle}`（`FAILED_TO_RESOLVE_REMOTE_USER`）
-- `Full-text search is unavailable (UNAVAILABLE); use the users/notes path`（全文検索ツールはない。このコードだけフォールバック用にマップしている）
+- `Full-text search is unavailable (UNAVAILABLE); use the users/notes path`（全文検索ツールは存在しない。`UNAVAILABLE` はフォールバックマップとしてだけ残している）
 - `Rate limit reached. Please retry after a while`（429 は 200ms × 2^n の指数 backoff、最大3リトライ）
 - `Misskey API error ({code}): {message}`
 - `HTTP error: {message}`
@@ -157,7 +197,8 @@ HTTP timeout は 30 秒。closed enum（`Visibility` の 4 値）は `Unknown` v
 
 ```
 src/
-  main.rs        stdio エントリポイント
+  main.rs        エントリポイント（transport で分岐）
+  cli.rs         引数 parse
   config.rs      env 検証
   params.rs      ツール引数と limit 定数
   dates.rs       ISO 8601 厳格 parse
@@ -167,8 +208,9 @@ src/
   view.rs        LLM に返す型（view）
   tools/         3ツールの実装
   service.rs     rmcp の tool router
+  sse.rs         HTTP + SSE サーバー（自前実装）
 tests/
-  unit.rs        日付・handle のケース表
+  unit.rs        日付・handle・CLI 引数のケース表
   integration.rs wiremock（ページネーション、view の JSON shape、relation 状態）
 ```
 

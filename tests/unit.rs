@@ -1,6 +1,7 @@
 use chrono_tz::Tz;
 use serde_json::json;
 
+use misskey_fetch::cli::{parse, CliError, TransportKind};
 use misskey_fetch::dates::parse_iso8601;
 use misskey_fetch::errors::ToolError;
 use misskey_fetch::handle::{handle_string, normalize_host, parse_handle};
@@ -183,4 +184,48 @@ fn note(id: &str, created_at: &str) -> Note {
         "user": { "id": "u1", "username": "a", "host": null }
     }))
     .expect("note")
+}
+
+// --- CLI ---
+fn args(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn cli_defaults_to_stdio() {
+    let cli = parse(&args(&["--port", "3000"])).expect("ok");
+    assert_eq!(cli.transport, TransportKind::Stdio);
+    // stdio では bind 引数は効かない（main が stderr に警告を出す）
+    assert!(cli.ignored_bind);
+}
+
+#[test]
+fn cli_accepts_sse_with_host_and_port() {
+    let cli = parse(&args(&["--transport", "sse", "--host", "0.0.0.0", "--port", "3000"])).expect("ok");
+    assert_eq!(cli.transport, TransportKind::Sse);
+    assert_eq!(cli.host, "0.0.0.0");
+    assert_eq!(cli.port, 3000);
+    assert!(!cli.ignored_bind);
+
+    // `--flag=value` 形式
+    let eq = parse(&args(&["--transport=sse", "--port=3000"])).expect("ok");
+    assert_eq!(eq.transport, TransportKind::Sse);
+    assert_eq!(eq.port, 3000);
+
+    let d = parse(&args(&[])).expect("ok");
+    assert_eq!(d.transport, TransportKind::Stdio);
+    assert_eq!(d.host, "127.0.0.1");
+    assert_eq!(d.port, 8080);
+}
+
+#[test]
+fn cli_rejects_bad_args() {
+    assert!(matches!(parse(&args(&["--port", "abc"])), Err(CliError::InvalidPort { .. })));
+    assert!(matches!(
+        parse(&args(&["--transport", "http"])),
+        Err(CliError::InvalidTransport { .. })
+    ));
+    assert!(matches!(parse(&args(&["--port"])), Err(CliError::MissingValue { .. })));
+    assert!(matches!(parse(&args(&["-x"])), Err(CliError::Unknown { .. })));
+    assert!(matches!(parse(&args(&["--help"])), Err(CliError::Help)));
 }
