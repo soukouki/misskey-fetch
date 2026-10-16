@@ -1,5 +1,9 @@
 # multi-stage ビルド → distroless（非root）
-FROM rust:1.88-alpine AS build
+# uuid 1.28.0 の MSRV が rustc 1.89.0（Cargo.lock の他の依存は 1.88 で可）
+FROM rust:1.99-alpine AS build
+# proc-macro crate は .so として動的リンクされるため、crt1.o/crti.o を持つ musl-dev が必要
+# （公式 rust:alpine イメージには入っていない。build stage 専用、+11MB 程度）
+RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
