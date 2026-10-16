@@ -1,60 +1,186 @@
 # misskey-fetch
 
-読み取り専用の Misskey MCP サーバー（Rust / rmcp / reqwest / chrono-tz / schemars、stdio トランスポート）。
+Misskey を読むだけの MCP サーバー。stdio で JSON-RPC を受け取り、3つのツールを MCP クライアント（LLM）に提供する。書き込みエンドポイントは呼ばない。
+
+Rust（rmcp / reqwest / chrono-tz / schemars / serde）。
 
 ## 実行
 
+| 環境変数 | 必須 | 内容 |
+|---|---|---|
+| `MISSKEY_TOKEN` | はい | 読み取り権限のトークン。空だと起動時にエラー |
+| `MISSKEY_API_URL` | はい | `https://` の API ベース URL。末尾スラッシュは除去。http は拒否、リダイレクトは追わない（token の別 origin 漏洩防止） |
+| `TZ` | はい | IANA タイムゾーン名（例 `Asia/Tokyo`）。未設定・不正は起動エラー。chrono-tz は env を自動参照しないので明示 parse する |
+
+`MISSKEY_API_URL` のホスト部は `instance_host` として保持する（lowercase + punycode）。`handle` の host 省略時に使う。
+
 ```sh
-export MISSKEY_TOKEN=...            # read:account のみ
-export MISSKEY_API_URL=https://misskey.io/api
-export TZ=Asia/Tokyo                # 必須（未設定は起動エラー）
-docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ ghcr.io/.../misskey-fetch
+cargo run --locked
 ```
 
-stdout は JSON-RPC のみ、ログは stderr。
+```sh
+docker build -t misskey-fetch .
+docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
+```
+
+stdout は JSON-RPC のみ。起動情報（`api_base` と `tz`）と 429 の backoff は stderr。token は stderr にも出さない。
+
+MCP クライアントの設定例:
+
+```json
+{
+  "mcpServers": {
+    "misskey": {
+      "command": "misskey-fetch",
+      "env": {
+        "MISSKEY_TOKEN": "...",
+        "MISSKEY_API_URL": "https://misskey.io/api",
+        "TZ": "Asia/Tokyo"
+      }
+    }
+  }
+}
+```
 
 ## ツール
 
-- `get_timeline(type=home|local|global, limit<=1000)` → `Page`（`notes` は createdAt 降順）
-- `get_user_info(handle?)` → `UserViewDetailed`（ページラッパーなし）
-- `get_user_notes(handle?, after?, before?, limit<=1000, includeRenotes)` → `Page`
+### `get_timeline`
 
-`handle` は `@username` または `@username@host`。`@` で始める必要がある（`@` なしはエラー）。host 省略は `MISSKEY_API_URL` のホストで補完（= ローカルユーザー）。省略時は `users/me`。
+| 引数 | 既定 | 内容 |
+|---|---|---|
+| `type` | `local` | `home` \| `local` \| `global` |
+| `limit` | 20 | 1..1000 に clamp |
 
-`Page` は `notes` / `truncated` / `nextCursor` / `message`。省略が発生した場合のみ `message`（英語）に「表示件数」と「続きの取得方法（`untilId`）」を書く。
+日付引数は受け付けない。呼ぶ endpoint: `notes/timeline` / `notes/local-timeline` / `notes/global-timeline`。
 
-日付は ISO 8601（`YYYY-MM-DD`、任意で時刻）。オフセットは省略可で、省略時は `TZ` の壁時計時刻として解釈する。曖昧・相対表現（`now`, `-1d`, `2024-2-3`）、basic format（`20240203`）、週日付、space 区切り、reduced precision は拒否し、英語で「具体的な日付（YYYY-MM-DD形式）で再指定してください」を返す。
+### `get_user_info`
 
-## 出力 shape（view layer）
+| 引数 | 既定 | 内容 |
+|---|---|---|
+| `handle` | 認証ユーザー | `@username` または `@username@host` |
 
-- `NoteView`: `id`, `createdAt`, `user`, `text`, `cw`, `visibility`, `isHidden`, `poll`, `files`, `channel`, `reply`, `renote`
-- `UserView`: `name`, `handle`, `isBot`（`userId` は LLM に見せない）
-- `FileView`: `name`, `mime`, `size`, `isSensitive`, `url`, `comment`
-- `PollView`: `expiresAt`, `multiple`, `choices[{text, votes}]`
-- `ChannelView`: `name`, `isSensitive`
-- `RelationView`（`reply` / `renote`）: `none` / `notJoined{id}` / `notFound{id}` / `present{id, note}`
+`users/show`（handle 省略時は `users/me`）でユーザーを解決し、`users/notes`（limit 10）をもう一度呼んで `recentNotes` を埋める。ページラッパーなしで `{user, description, pinnedNotes, recentNotes}` を返す。
 
-`cw` は**警告文**（UI で常時表示）、`text` はその**隠された本文**（UI で折りたたまれる）。`isHidden` は viewer 相対の relation（`shouldHideNote(packed, meId)`）であり、note の property ではない。
+### `get_user_notes`
 
-## 既知の制限
+| 引数 | 既定 | 内容 |
+|---|---|---|
+| `handle` | 認証ユーザー | `@username` または `@username@host` |
+| `after` | なし | ISO 8601。排他境界 |
+| `before` | なし | ISO 8601。排他境界 |
+| `limit` | 100 | 1..1000 に clamp |
+| `includeRenotes` | true | |
 
-- **検索経路は定義的に不完全**（主経路は `users/notes` + `sinceDate`/`untilDate`）。`/notes/search`（任意機能）は `text == null && cw == null` のノート（メディアのみ・pure renote）を索引しない、`public`/`home` しか索引しない、Meilisearch の scope が `local`（デフォルト）なら remote ユーザーのノートが落ちる。
-- `sinceDate`/`untilDate` は Misskey 側で `note.id > gen(ms)` の ID 比較。ID 生成方式は `aid|aidx|meid|meidg|ulid|objectid` でインスタンス設定依存のため、remote ノートでは日付境界が機能しないことがある。同一ミリ秒のノートが境界を通過する保証はない。
-- **排他境界**: `after`/`before` は排他。日付のみ入力は `TZ` の 0 時境界であり、境界ちょうど（`00:00:00.000`）のノートは除外される。API で粗く絞り込み、返却前に `createdAt` を厳密検証して範囲外を落とす。DST で曖昧・非存在の壁時計時刻は `latest()`（DST 移行後のオフセット）で解決する。
-- **`createdAt` の信頼性**: Misskey は `createdAt` を DB カラムではなくノート ID から導出する（`idService.parse(id).date`）。非準拠実装（Mastodon snowflake 等）はスコープ外。解析に失敗した場合は応答全体を失敗させる（個々のノートを黙って skip しない）。
-- **view は model の mirror ではない**。model の直積構造を保持し、`noteType` のような排他的分類（partition）は持たない。Misskey の実際の分類は `PureRenote ⊎ Content` の 2 値のみ。
-- **closed enum の drift**: `Visibility`（4値）と `RelationView`（4値）は model の value set を写した closed enum であり、`Unknown` variant は持たない。Misskey が値を追加した場合（例: `isHidden` → `hiddenReason`）は解析失敗で落ちる。再起動で回収できるシステムではこれが許容範囲という判断。
-- **view から落とした model field**: `userId`（LLM に見せない）、`emojis` / `reactionEmojis`（描画 data）、`reactionCount`（`Σ reactions` から derived）、`deletedAt`（schema にあるが `pack()` が出さない）、`reactionAndUserPairCache`（opt-in flag が必要で flag を立てる endpoint がない）、`clippedCount`、`myReaction`、`avatarDecorations`、`isBot`/`onlineStatus` 以外の user field。
-- **`name` の衝突**: `MiNote.name`（varchar 256, nullable）はノートのタイトルであり packed output にはない。output の `name` は `UserLite.name`（nullable）であり、同じ名前で意味が違う。両方は使えないため view の `name` はユーザー名として解像した値のみ。
-- **canonicalization の非対称**: 入力の `@alice` は内部で `UserRef{alice, None}`（ローカル）になり、出力の `handle` は `@alice@{instance_host}` になる。同じ文字列ではない。2周目以降は round-trip で安定する。
-- **host 正規化**: lookup path は lowercase + punycode（`RemoteUserResolveService.resolveUser` と同じ）。display path は stored 値を使う。`instance_host` は punycode で保存する。
-- **`text` は pack 時に書き換えられる**: `note.name && (note.url ?? note.uri)` の条件で本文が組み立てられる。stored 値と output 値が異なる。
-- **入れ子 note の detail gate 非対称**: `reply` の入れ子は `detail: false`（`poll` / `myReaction` / `clippedCount` が shape に入らない）、`renote` の入れ子は `detail: true`。`reply` に `poll` がないのは model の制約ではなく API 側の packing 選択（`replyId + poll` のノートは作れる）。
-- **relation の深さ limit は 10**。打ち切られた位置は `notJoined` で表し、専用の flag field は持たない。model に cycle はありえない（renote の対象は作成時点で存在する必要がある）。
-- **invariant は型ではなく実行時 check**: 「entity present ⇒ FK present」は `RelationView` の構造で保証できるが、「FK present ⇒ entity present」は detail gate により破れるため `notFound` が必要。
-- **muting / blocking / channel muting**: Misskey サーバー側で適用され、適用された結果が返る。
-- **visibility**: `users/notes` は認証ユーザーから見える範囲（自分の `followers`/`specified` を含む）を返す。タイムラインは公開範囲のみ。`treatVisibility` は `public`/`home` を policy で `followers` に書き換える（`makeNotesFollowersOnlyBefore`）。
-- remote ユーザーの `users/notes` は ID 順で返るため、remote の ID 方式が異なると ID 順 ≠ 時系列順。返却前に `createdAt` 降順に再ソートする。
-- 要求 `limit` は 1000 で clamp（1リクエストの page size は 100、Misskey API の上限）。ページネーションは最大 10 ページ（暴走防止）。省略分は `truncated` / `nextCursor` / `message` で伝える。
-- `canSearchNotes` は role policy（ユーザー単位）であり `meta.disableSearchNotes` とは別物。フラグ分岐せず `UNAVAILABLE` を受けてフォールバック。
-- `MISSKEY_API_URL` は https 限定、リダイレクトを追わない（token の別 origin 漏洩防止）。token はログ・エラーメッセージに出さない。429 は指数 backoff（200ms × 2^n、最大3リトライ）。
+`after > before` はエラー。呼ぶ endpoint: `users/notes`（`sinceDate` / `untilDate` は epoch ms）。
+
+## 応答の形
+
+`get_timeline` / `get_user_notes` はページオブジェクト、`get_user_info` はそのままユーザーオブジェクト。すべて camelCase。
+
+```json
+{
+  "notes": [
+    {
+      "id": "aa",
+      "createdAt": "2024-02-03T00:00:00Z",
+      "user": { "name": "B", "handle": "@b@misskey.io", "isBot": true },
+      "text": "本文",
+      "cw": "警告文",
+      "visibility": "home",
+      "isHidden": false,
+      "poll": null,
+      "files": [
+        { "name": "img.png", "mime": "image/png", "size": 1234, "isSensitive": true,
+          "url": "https://cdn.example/img.png", "comment": null }
+      ],
+      "channel": { "name": "ch", "isSensitive": false },
+      "reply": { "state": "none" },
+      "renote": { "state": "notFound", "id": "x1" }
+    }
+  ],
+  "truncated": false,
+  "nextCursor": null,
+  "message": null
+}
+```
+
+- `cw` は警告文（UI で常時表示）、`text` はその折りたまれた本文。
+- `isHidden` はノート固有の property ではなく viewer 相対の relation（policy 由来の隠蔽）。
+- `userId` は view に入れない。LLM に見せる識別子は `name` と `handle` だけ。
+- `reply` / `renote` は 4 状態の tagged object: `none` / `notJoined{id}`（relation はあるが応答に含まれなかった）/ `notFound{id}`（relation があり detail gate は通過したが対象がない）/ `present{id, note}`。入れ子 note の renote chain は深さ 10 で打ち切り、打ち切り点は `notJoined`。
+- `truncated` / `nextCursor` / `message` は省略が発生した場合だけ入る。`message` は英語の文字列で、続きの `untilId` を書く。
+
+## 日付引数
+
+厳格な ISO 8601 だけ受け付ける。曖昧解析はしない（正規化は LLM 側の仕事）。
+
+- `YYYY-MM-DD` だけ: `TZ` の 0 時境界
+- オフセット付き（`Z` / `+09:00`）: そのまま尊重（`TZ` は影響しない）
+- オフセットなしの時刻: `TZ` の壁時計時刻
+- 小数秒は任意桁数（9桁超は nanosecond 分解能で切り捨て）
+- DST で曖昧・非存在の壁時計時刻は `latest()` で解決
+
+拒否: 月日1桁、不正日付、範囲外（`25:00` / `12:60` / leap second `:60`）、slash 区切り、相対表現（`now`, `-1d`）、basic format（`20240203`）、週日付、space 区切り、reduced precision。拒否時のメッセージは英語の `Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}`。
+
+境界は排他。日付のみ入力は `TZ` の 0 時境界なので、境界ちょうど（`00:00:00.000`）のノートは除外される。API で粗く絞り込み、返ってきた件数を `createdAt` で厳密検証して範囲外を落とす。
+
+## handle
+
+- `@` で始まっていなければならない。`@` なしはエラー。
+- `@username`（host 省略）はローカルユーザー。
+- `@username@host` は username / host に分割。解析した host が `instance_host` と等しい場合はローカルに正規化する（Misskey はローカルユーザーを `host: null` で保存するため、自ホストを remote host として渡すと失敗する）。
+- lookup path は username lowercase、host lowercase + punycode。display path は API が返した stored 値を使い、常に完全形（`@username@instance_host`）で返す。
+
+## 件数とページネーション
+
+要求 limit は 1..1000 に clamp。1リクエストの page size は 100（Misskey API の上限）。ページネーションは最大 10 ページ。停止条件は件数到達、空ページ（データ尽き）、または日付境界到達。データ尽きは `truncated` にならない。
+
+ページネーションは `untilId`（前回最後のノート）でサーバ側に行う。remote ユーザーの `users/notes` は ID 順で返るため、ID 方式が異なると ID 順 ≠ 時系列順。返却前に `createdAt` 降順に再ソートする。
+
+## エラー
+
+LLM 向けエラーは JSON-RPC の error ではなく `isError: true` のツール結果として返す（`Display` がそのまま文言になる英語）。
+
+- `Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}`
+- `Parameter error: {message}`（handle 不正、`after > before`）
+- `User not found: {handle}`（`NO_SUCH_USER`）
+- `Could not resolve remote user: {handle}`（`FAILED_TO_RESOLVE_REMOTE_USER`）
+- `Full-text search is unavailable (UNAVAILABLE); use the users/notes path`（全文検索ツールはない。このコードだけフォールバック用にマップしている）
+- `Rate limit reached. Please retry after a while`（429 は 200ms × 2^n の指数 backoff、最大3リトライ）
+- `Misskey API error ({code}): {message}`
+- `HTTP error: {message}`
+- `Inconsistent API response: {field} is present without its id`
+
+HTTP timeout は 30 秒。closed enum（`Visibility` の 4 値）は `Unknown` variant を持たないので、Misskey が値を追加すると解析失敗で落ちる。
+
+## 構成
+
+```
+src/
+  main.rs        stdio エントリポイント
+  config.rs      env 検証
+  params.rs      ツール引数と limit 定数
+  dates.rs       ISO 8601 厳格 parse
+  handle.rs      handle 解析と正規化
+  errors.rs      LLM 向けエラー
+  misskey/       API 応答の型（model）と HTTP client
+  view.rs        LLM に返す型（view）
+  tools/         3ツールの実装
+  service.rs     rmcp の tool router
+tests/
+  unit.rs        日付・handle のケース表
+  integration.rs wiremock（ページネーション、view の JSON shape、relation 状態）
+```
+
+```sh
+cargo test
+```
+
+## 実装上の挙動
+
+- `createdAt` は Misskey がノート ID から導出する値（DB カラムではない）。解析に失敗したノートは個別 skip せず応答全体を失敗させる。非準拠実装（Mastodon snowflake 等）はスコープ外。
+- `text` は pack 時に書き換えられることがある（`note.name && (note.url ?? note.uri)` の条件）。stored 値と view 値が異なる。
+- 入れ子 note の detail gate は非対称: `reply` の入れ子は `detail: false`（`poll` が shape に入らない）、`renote` の入れ子は `detail: true`。
+- muting / blocking / channel muting はサーバー側で適用され、適用された結果が返る。
+- `users/notes` は認証ユーザーから見える範囲（自分の `followers` / `specified` を含む）を返す。タイムラインは公開範囲のみ。
+- view は model の mirror ではない。`reactionCount`（derived）、`emojis`、`deletedAt`、`myReaction`、`clippedCount` 等は落としている。
