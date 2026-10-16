@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use crate::config::Config;
 use crate::dates::parse_iso8601;
 use crate::errors::ToolError;
-use crate::handle::{handle_string, resolve_user_ref};
+use crate::handle::{handle_string, parse_handle};
 use crate::misskey::client::Client;
 use crate::misskey::types::{self, NoteWithUser, NotesPage, RawNote, RawUser, UserWithNotes};
 use crate::params::{
@@ -69,7 +69,7 @@ pub async fn get_user_info(
     cfg: &Config,
     p: &GetUserParams,
 ) -> Result<UserWithNotes, ToolError> {
-    let user = resolve_user(client, cfg, p.username.as_deref(), p.host.as_deref()).await?;
+    let user = resolve_user(client, cfg, p.handle.as_deref()).await?;
     let handle = types::handle_of(&user, &cfg.instance_host);
 
     // recentNotes は users/notes (limit 10) の追加呼び出しで埋める（spec 4.3）
@@ -93,7 +93,7 @@ pub async fn get_user_notes(
     cfg: &Config,
     p: &GetUserNotesParams,
 ) -> Result<NotesPage, ToolError> {
-    let user = resolve_user(client, cfg, p.username.as_deref(), p.host.as_deref()).await?;
+    let user = resolve_user(client, cfg, p.handle.as_deref()).await?;
     let handle = types::handle_of(&user, &cfg.instance_host);
 
     let after = p
@@ -236,27 +236,21 @@ fn views(collected: &[RawNote], fallback: Option<&RawUser>, instance_host: &str)
 async fn resolve_user(
     client: &Client,
     cfg: &Config,
-    username: Option<&str>,
-    host: Option<&str>,
+    handle: Option<&str>,
 ) -> Result<RawUser, ToolError> {
-    let Some(raw) = username.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-        if host.is_some() {
-            return Err(ToolError::InvalidParams {
-                message: "host can only be used together with username".to_string(),
-            });
-        }
+    let Some(raw) = handle.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         let value = client.call("users/me", &json!({}), "").await?;
         return serde_json::from_value::<RawUser>(value).map_err(|e| ToolError::Http {
             message: e.to_string(),
         });
     };
 
-    // username に埋め込まれた host と明示 host 引数の同時指定はエラー（spec 5.2）
-    let r = resolve_user_ref(raw, host)?;
+    let r = parse_handle(raw, &cfg.instance_host)?;
+    // ローカルユーザーの host は null（Misskey はローカルユーザーを host: null で保存する）
     let body = json!({ "username": r.username, "host": r.host });
-    let handle = handle_string(&r, &cfg.instance_host);
+    let display = handle_string(&r, &cfg.instance_host);
 
-    let value = client.call("users/show", &body, &handle).await?;
+    let value = client.call("users/show", &body, &display).await?;
     serde_json::from_value::<RawUser>(value).map_err(|e| ToolError::Http {
         message: e.to_string(),
     })

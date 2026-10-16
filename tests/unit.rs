@@ -3,7 +3,7 @@ use serde_json::json;
 
 use misskey_fetch::dates::parse_iso8601;
 use misskey_fetch::errors::ToolError;
-use misskey_fetch::handle::{handle_string, normalize_user_ref};
+use misskey_fetch::handle::{handle_string, parse_handle};
 use misskey_fetch::misskey::types::{RawNote, in_range};
 
 fn tokyo() -> Tz {
@@ -103,30 +103,42 @@ fn date_only_uses_tz_midnight() {
     assert_ne!(tokyo, u);
 }
 
-// --- `@` 正規化と username / host 分割（spec 5.2） ---
+// --- `@` 正規化と username / host 分割（spec 5.2、決定5） ---
 #[test]
 fn normalizes_handle() {
-    assert_eq!(
-        normalize_user_ref("@alice@remote.example"),
-        Some(normalize_user_ref("alice@remote.example").expect("x"))
-    );
-    let r = normalize_user_ref("@alice").expect("x");
-    assert_eq!(r.username, "alice");
-    assert_eq!(r.host, None);
-    let r = normalize_user_ref("@alice@remote.example").expect("x");
+    let r = parse_handle("@alice@remote.example", "misskey.io").expect("x");
     assert_eq!(r.username, "alice");
     assert_eq!(r.host.as_deref(), Some("remote.example"));
+    assert_eq!(handle_string(&r, "misskey.io"), "@alice@remote.example");
+    // 表示は常に完全形
     assert_eq!(
-        handle_string(&r, "misskey.io"),
-        "@alice@remote.example"
-    );
-    assert_eq!(
-        handle_string(&normalize_user_ref("alice").expect("x"), "misskey.io"),
+        handle_string(&parse_handle("@alice", "misskey.io").expect("x"), "misskey.io"),
         "@alice@misskey.io"
     );
-    assert_eq!(normalize_user_ref(""), None);
-    assert_eq!(normalize_user_ref("@"), None);
-    assert_eq!(normalize_user_ref("@alice@"), None);
+    for bad in ["", "@", "@alice@", "@@remote.example"] {
+        assert!(parse_handle(bad, "misskey.io").is_err(), "{bad}");
+    }
+}
+
+// --- `@` なしの入力は拒否（決定5） ---
+#[test]
+fn rejects_handle_without_at() {
+    let err = parse_handle("alice", "misskey.io").expect_err("must reject");
+    assert_eq!(
+        err.to_string(),
+        "Invalid handle \"alice\": must be @username or @username@host"
+    );
+}
+
+// --- host 省略はインスタンスホストで補完（決定5） ---
+#[test]
+fn handle_without_host_completed_to_instance_host() {
+    let r = parse_handle("@sou7", "misskey.io").expect("x");
+    assert_eq!(r.username, "sou7");
+    assert_eq!(r.host, None); // 内部表現ではローカル
+    assert_eq!(handle_string(&r, "misskey.io"), "@sou7@misskey.io");
+    // インスタンスホストを明示した場合もローカルに正規化（users/show は null を要求）
+    assert_eq!(parse_handle("@sou7@misskey.io", "misskey.io").expect("x").host, None);
 }
 
 // --- 排他境界: 0 時ちょうど（境界ちょうど）のノートは除外（spec 6.2.4 / 6.1.5） ---

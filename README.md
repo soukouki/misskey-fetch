@@ -16,8 +16,8 @@ stdout は JSON-RPC のみ、ログは stderr。
 ## ツール
 
 - `get_timeline(type=home|local|global, limit<=1000)` → `NotesPage`（`notes` は createdAt 降順）
-- `get_user_info(username?, host?)` → `User`（`@user@host` は username/host に分割、省略時は `users/me`）
-- `get_user_notes(username?, host?, after?, before?, limit<=1000, includeRenotes)` → `NotesPage`
+- `get_user_info(handle?)` → `User`（`handle` は `@username` または `@username@host`。`@` で始める必要がある（`@` なしはエラー）。host 省略はインスタンスホスト補完（= ローカルユーザー）。省略時は `users/me`）
+- `get_user_notes(handle?, after?, before?, limit<=1000, includeRenotes)` → `NotesPage`（`handle` は `get_user_info` と同じ規則）
 
 `NotesPage` は `notes` / `truncated` / `nextCursor` / `message`。省略が発生した場合のみ `message`（英語）に「表示件数」と「続きの取得方法（`untilId`）」を書く。
 

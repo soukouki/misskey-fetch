@@ -32,19 +32,17 @@ pub struct GetTimelineParams {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GetUserParams {
+    /// `@username` または `@username@host`（`@` 必須。host 省略はインスタンスホスト補完）。
     #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
-    pub host: Option<String>,
+    pub handle: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GetUserNotesParams {
+    /// `@username` または `@username@host`（`@` 必須。host 省略はインスタンスホスト補完）。
     #[serde(default)]
-    pub username: Option<String>,
-    #[serde(default)]
-    pub host: Option<String>,
+    pub handle: Option<String>,
     /// ISO 8601（YYYY-MM-DD、任意で時刻付き）。排他境界。
     #[serde(default)]
     pub after: Option<String>,

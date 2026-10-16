@@ -69,8 +69,7 @@ async fn get_user_notes_passes_date_boundaries_and_reverifies_created_at() {
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserNotesParams {
-        username: Some("alice".to_string()),
-        host: None,
+        handle: Some("@alice".to_string()),
         after: Some("2024-02-03".to_string()),
         before: Some("2024-02-04".to_string()),
         limit: None,
@@ -117,8 +116,7 @@ async fn limit_is_clamped_to_page_size() {
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserNotesParams {
-        username: None,
-        host: None,
+        handle: None,
         after: None,
         before: None,
         limit: Some(500),
@@ -150,8 +148,7 @@ async fn limit_is_clamped_to_1000_and_reports_truncation() {
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserNotesParams {
-        username: Some("alice".to_string()),
-        host: None,
+        handle: Some("@alice".to_string()),
         after: None,
         before: None,
         limit: Some(1200),
@@ -207,8 +204,7 @@ async fn paginates_with_until_id() {
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserNotesParams {
-        username: Some("alice".to_string()),
-        host: None,
+        handle: Some("@alice".to_string()),
         after: None,
         before: None,
         limit: Some(4),
@@ -251,8 +247,7 @@ async fn get_user_info_splits_at_handle() {
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserParams {
-        username: Some("@bob@remote.example".to_string()),
-        host: None,
+        handle: Some("@bob@remote.example".to_string()),
     };
     let user = tools::get_user_info(&client, &config, &p).await.expect("ok");
     assert_eq!(user.handle, "@bob@remote.example");
@@ -270,23 +265,32 @@ async fn get_user_info_splits_at_handle() {
 }
 
 #[tokio::test]
-async fn embedded_host_and_explicit_host_conflict_is_an_error() {
+async fn handle_equal_to_instance_host_is_normalized_to_local() {
     let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(user("u1", "sou7", None)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/notes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
 
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserParams {
-        username: Some("@bob@remote.example".to_string()),
-        host: Some("other.example".to_string()),
+        handle: Some("@sou7@mock.test".to_string()),
     };
-    let err = tools::get_user_info(&client, &config, &p).await.expect_err("error");
-    assert!(matches!(err, ToolError::InvalidParams { .. }), "{err}");
-    assert!(
-        err.to_string().starts_with("Parameter error: Conflicting host:"),
-        "{err}"
-    );
-    // API を呼ぶ前にエラーになる
-    assert_eq!(server.received_requests().await.expect("requests").len(), 0);
+    let u = tools::get_user_info(&client, &config, &p).await.expect("ok");
+    assert_eq!(u.handle, "@sou7@mock.test");
+
+    let requests = server.received_requests().await.expect("requests");
+    let body: Value = requests[0].body_json().expect("body");
+    // Misskey はローカルユーザーを host: null で保存するため、自ホストは null として渡す
+    assert_eq!(body["username"], "sou7");
+    assert_eq!(body["host"], Value::Null);
 }
 
 #[tokio::test]
@@ -342,8 +346,7 @@ async fn no_such_user_is_mapped_to_llm_message() {
     let config = cfg(&format!("{}/api", server.uri()));
     let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserParams {
-        username: Some("@ghost@mock.test".to_string()),
-        host: None,
+        handle: Some("@ghost@mock.test".to_string()),
     };
     let err = tools::get_user_info(&client, &config, &p).await.expect_err("error");
     assert!(matches!(err, ToolError::NoSuchUser { .. }), "{err}");

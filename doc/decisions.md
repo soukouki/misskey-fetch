@@ -23,13 +23,10 @@ spec.md は常時最新の事実だけを保持する（変更履歴は持たな
 - **allowlist**: 実行時の allowlist 判定は持たない（呼ぶエンドポイントが決まっているため無意味）。読み取り専用の保証はコード構造とテストで検証。`meta` は不要と判断し削除。
 - **mock 戦略**: `wiremock`（dev-dependency）。実 Misskey へのネットワークリクエストはしない。例外系のテストは増やさない（既存の追記・削除のみ）。
 - **ローカルホスト表現**: `users/show` の**応答**では `null`（JSON の null。パラメータの省略ではない）、`notes/search` の**パラメータ**では `.`。内部で「ローカルユーザー」という概念に統一し、LLM には `@username@host`（host 省略時は API URL のホスト）を提示。
+- **`@user@host` 正規化（決定5）**: 入出力とも `@user@host` 形式に統一し、ユーザー指定の引数は `handle` のみ（`username` / `host` 引数は撤去）。値は `@` で始まっていなければならない（`@` なしはエラー）。`@username@host` は username / host に分割して API に渡す（`username` フィールドに `@user@host` をそのまま渡してはいけない）。host 省略（`@username`）はインスタンスホスト補完（= ローカルユーザー）。解析した host がインスタンスホストと一致する場合はローカルに正規化する（`users/show` には `null`）。内部表現は構造化 `UserRef { username, host }`（`None` = ローカル）で、表示用文字列から生成しない。表示は常に `@username@{API_URL のホスト}` の完全形。
 - **`@` 正規化**: 先頭 `@` を除去し、`@user@host` は username / host に分割して API に渡す。username 埋め込みホストと明示 `host` 引数の**同時指定はエラー**。
 - **デフォルト引数**: `withReplies` false、`withRenotes` true、`allowPartial` false（Misskey の paramDef と一致。Misskey 側コメントは true を推奨）。
 
 ## 未決
 
-- **username / host パラメータの形状**（人間が検討中）。現状は「同時指定不可」だけを実装。
-  - 案 (a): `username` が host を内包（`alice` または `@alice@remote.example`）、`host` 引数を削除。レスポンスの `handle` 形式と揃い、LLM が応答で見た `@bob@remote.example` をそのまま再投入できる（round-trip が自然）。Misskey API 自体は `username` と `host` を分離して受けるが、username に `@` は含めないため解析は安全。
-  - 案 (b): `username` は username のみ、`host` は host のみ。`@` 付き入力は拒否。Misskey API の paramDef と1対1で、解析が不要。ただし LLM が `handle` を自分で分割する必要があり、ミスの余地が残る。
-  - 判断材料: LLM が実際に渡す文字列がどちらに収まるか（応答の `handle` と同一形なら (a)、API の paramDef と同一形なら (b)）。
-- **テストで未カバー**: 429 backoff、`FAILED_TO_RESOLVE_REMOTE_USER`、`UNAVAILABLE` フォールバック、DST 曖昧、`host` のみの指定エラー。追加するかは未決。
+- **テストで未カバー**: 429 backoff、`FAILED_TO_RESOLVE_REMOTE_USER`、`UNAVAILABLE` フォールバック、DST 曖昧、`@` なし入力の拒否。追加するかは未決。

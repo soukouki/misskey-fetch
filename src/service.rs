@@ -44,7 +44,7 @@ impl MisskeyService {
 
     #[tool(
         name = "get_user_info",
-        description = "Returns the profile and recent notes of a user (default: the authenticated user of MISSKEY_TOKEN). username also accepts @username@host, split server-side into username / host; passing an embedded host together with an explicit host parameter is an error. Returns the user object directly, without a page wrapper. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy."
+        description = "Returns the profile and recent notes of a user (default: the authenticated user of MISSKEY_TOKEN). Pass handle as @username or @username@host; a value without @ is rejected; host omitted means the instance host derived from MISSKEY_API_URL. Returns the user object directly, without a page wrapper. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy."
     )]
     async fn get_user_info(&self, params: Parameters<GetUserParams>) -> Result<CallToolResult, ErrorData> {
         Ok(render(tools::get_user_info(&self.client, &self.config, &params.0).await))
@@ -52,7 +52,7 @@ impl MisskeyService {
 
     #[tool(
         name = "get_user_notes",
-        description = "Returns a user's notes (default: the authenticated user of MISSKEY_TOKEN), sorted by createdAt descending. Date input is ISO 8601 (YYYY-MM-DD, optional time; offset optional, no-offset means TZ wall-clock); relative expressions (now, -1d) are not accepted. after / before are exclusive boundaries. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy. Results may be truncated: the response is a page object carrying truncated, nextCursor (the untilId to continue) and an English message."
+        description = "Returns a user's notes (default: the authenticated user of MISSKEY_TOKEN), sorted by createdAt descending. Pass handle as @username or @username@host; a value without @ is rejected; host omitted means the instance host derived from MISSKEY_API_URL. Date input is ISO 8601 (YYYY-MM-DD, optional time; offset optional, no-offset means TZ wall-clock); relative expressions (now, -1d) are not accepted. after / before are exclusive boundaries. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy. Results may be truncated: the response is a page object carrying truncated, nextCursor (the untilId to continue) and an English message."
     )]
     async fn get_user_notes(
         &self,
