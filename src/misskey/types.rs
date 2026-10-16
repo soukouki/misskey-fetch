@@ -92,21 +92,33 @@ pub fn handle_of(user: &RawUser, instance_host: &str) -> String {
     crate::handle::handle_string(&user.username, host)
 }
 
-/// pure renote（text / cw が null かつ renote 付き）は "renote"、reply 付きは "reply"、
+/// renote 付きは "renote"（引用投稿も Misskey UI では renote）、reply 付きは "reply"、
 /// それ以外は "note"（doc/decisions.md 参照）。
 pub fn note_type_of(note: &RawNote) -> &'static str {
-    if note.reply.is_some() {
-        "reply"
-    } else if note.text.is_none() && note.cw.is_none() && note.renote.is_some() {
+    if note.renote.is_some() {
         "renote"
+    } else if note.reply.is_some() {
+        "reply"
     } else {
         "note"
     }
 }
 
+/// `renote` の再帰深度上限（深い入れ子 / 自己参照からの保護）。これを超えたら `renote: null`。
+pub const MAX_RENOTE_DEPTH: u32 = 10;
+
 /// `fallback` は queried user（renote / reply の著者が異なる場合があるため、
 /// packed user が無いときのみ使う）。
 pub fn to_view(note: &RawNote, fallback: Option<&RawUser>, instance_host: &str) -> NoteWithUser {
+    to_view_at_depth(note, fallback, instance_host, 0)
+}
+
+fn to_view_at_depth(
+    note: &RawNote,
+    fallback: Option<&RawUser>,
+    instance_host: &str,
+    depth: u32,
+) -> NoteWithUser {
     let author = note.user.as_ref().or(fallback);
     let (name, handle) = match author {
         Some(u) => (u.name.clone(), handle_of(u, instance_host)),
@@ -129,10 +141,13 @@ pub fn to_view(note: &RawNote, fallback: Option<&RawUser>, instance_host: &str) 
                 is_nsfw: f.is_nsfw,
             })
             .collect(),
-        renote: note
-            .renote
-            .as_ref()
-            .map(|r| Box::new(to_view(r, fallback, instance_host))),
+        renote: if depth >= MAX_RENOTE_DEPTH {
+            None
+        } else {
+            note.renote
+                .as_ref()
+                .map(|r| Box::new(to_view_at_depth(r, fallback, instance_host, depth + 1)))
+        },
     }
 }
 
@@ -159,8 +174,4 @@ pub fn sort_desc(notes: &mut [NoteWithUser]) {
         (Some(x), Some(y)) => x.cmp(&y),
         _ => b.created_at.cmp(&a.created_at),
     });
-}
-
-pub fn utc_now_marker() -> DateTime<Utc> {
-    Utc::now()
 }

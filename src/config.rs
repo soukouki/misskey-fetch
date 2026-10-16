@@ -3,15 +3,13 @@ use std::env;
 use chrono_tz::Tz;
 use thiserror::Error;
 
-pub const DEFAULT_TZ: &str = "Asia/Tokyo";
-
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("環境変数 {name} が設定されていません")]
+    #[error("Environment variable {name} is not set")]
     MissingEnv { name: &'static str },
-    #[error("MISSKEY_API_URL は https の URL でなければなりません: {url}")]
+    #[error("MISSKEY_API_URL must be an https URL: {url}")]
     InvalidUrl { url: String },
-    #[error("TZ を解析できません（IANA タイムゾーン名で指定してください）: {tz}")]
+    #[error("Cannot parse TZ (specify an IANA time zone name): {tz}")]
     InvalidTz { tz: String },
 }
 
@@ -26,7 +24,8 @@ pub struct Config {
 impl Config {
     /// 環境変数を起動時に検証する（spec 6.3）。
     ///
-    /// `TZ` は design.md のデフォルト `Asia/Tokyo` に従い、未設定時はフォールバックする。
+    /// `TZ` は必須（未設定時は起動エラー）。`chrono-tz` は env を自動参照しないため
+    /// `TZ` 文字列を明示 parse する。
     pub fn from_env() -> Result<Self, ConfigError> {
         let token = env::var("MISSKEY_TOKEN").unwrap_or_default();
         if token.trim().is_empty() {
@@ -43,7 +42,7 @@ impl Config {
             url: raw_url.clone(),
         })?;
 
-        let raw_tz = env::var("TZ").unwrap_or_else(|_| DEFAULT_TZ.to_string());
+        let raw_tz = env::var("TZ").map_err(|_| ConfigError::MissingEnv { name: "TZ" })?;
         let tz = raw_tz
             .parse::<Tz>()
             .map_err(|_| ConfigError::InvalidTz { tz: raw_tz.clone() })?;

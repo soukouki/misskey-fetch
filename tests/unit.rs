@@ -2,6 +2,7 @@ use chrono_tz::Tz;
 use serde_json::json;
 
 use misskey_fetch::dates::{parse_iso8601, parse_created_at};
+use misskey_fetch::errors::ToolError;
 use misskey_fetch::handle::{handle_string, normalize_user_ref};
 use misskey_fetch::misskey::types::{RawNote, in_range};
 
@@ -55,10 +56,11 @@ fn rejects_ambiguous_or_invalid_dates() {
         "2024-02-03T12:34:56.1234Z",
     ] {
         let err = parse_iso8601(input, tz).expect_err("must reject");
-        // spec 6.2.3: LLM への再指定指示
+        // LLM に返る文言（ToolError 変換後）は英語（spec 6.2.3 の趣旨）
+        let llm_message = ToolError::from(err).to_string();
         assert!(
-            err.to_string().starts_with("具体的な日付（YYYY-MM-DD形式）で再指定してください"),
-            "unexpected message for {input}: {err}"
+            llm_message.starts_with("Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format:"),
+            "unexpected message for {input}: {llm_message}"
         );
     }
 }

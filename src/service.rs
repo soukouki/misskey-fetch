@@ -18,12 +18,12 @@ pub struct MisskeyService {
 }
 
 impl MisskeyService {
-    pub fn new(config: Config) -> Self {
-        Self {
+    pub fn new(config: Config) -> Result<Self, ToolError> {
+        Ok(Self {
             tool_router: Self::tool_router(),
-            client: Client::new(&config),
+            client: Client::new(&config)?,
             config,
-        }
+        })
     }
 }
 

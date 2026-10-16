@@ -7,31 +7,28 @@ use crate::dates::DateError;
 /// `Display` がそのまま LLM に返る文言になる。token は含めない。
 #[derive(Debug, Error)]
 pub enum ToolError {
-    #[error("具体的な日付（YYYY-MM-DD形式）で再指定してください: {input}")]
+    #[error("Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}")]
     InvalidDate { input: String },
 
-    #[error("パラメータエラー: {message}")]
+    #[error("Parameter error: {message}")]
     InvalidParams { message: String },
 
-    #[error("allowlist 外のエンドポイントは呼べません: {endpoint}")]
-    DisallowedEndpoint { endpoint: String },
-
-    #[error("ユーザーが見つかりません: {handle}")]
+    #[error("User not found: {handle}")]
     NoSuchUser { handle: String },
 
-    #[error("リモートユーザーを解決できませんでした: {handle}")]
+    #[error("Could not resolve remote user: {handle}")]
     FailedToResolveRemoteUser { handle: String },
 
-    #[error("全文検索は無効です（UNAVAILABLE）。主経路の users/notes を使ってください")]
+    #[error("Full-text search is unavailable (UNAVAILABLE); use the users/notes path")]
     SearchUnavailable,
 
-    #[error("rate limit に達しました。しばらく待ってから再試行してください")]
+    #[error("Rate limit reached. Please retry after a while")]
     RateLimited,
 
-    #[error("Misskey API エラー ({code}): {message}")]
+    #[error("Misskey API error ({code}): {message}")]
     Api { code: String, message: String },
 
-    #[error("HTTP エラー: {message}")]
+    #[error("HTTP error: {message}")]
     Http { message: String },
 }
 

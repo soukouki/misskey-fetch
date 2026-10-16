@@ -94,7 +94,7 @@ pub async fn get_user_notes(
         .transpose()?;
     if let (Some(a), Some(b)) = (after, before) && a > b {
         return Err(ToolError::InvalidParams {
-            message: "after は before より後にできません".to_string(),
+            message: "after cannot be later than before".to_string(),
         });
     }
 
@@ -176,7 +176,7 @@ async fn resolve_user(
     let Some(raw) = username.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         if host.is_some() {
             return Err(ToolError::InvalidParams {
-                message: "host は username を指定しているときのみ使えます".to_string(),
+                message: "host can only be used together with username".to_string(),
             });
         }
         let value = client.call("users/me", &json!({}), "").await?;
@@ -186,7 +186,7 @@ async fn resolve_user(
     };
 
     let r = normalize_user_ref(raw).ok_or_else(|| ToolError::InvalidParams {
-        message: "username を解析できません".to_string(),
+        message: "Cannot parse username".to_string(),
     })?;
     let host = r
         .host

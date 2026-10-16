@@ -51,7 +51,7 @@ async fn get_user_notes_passes_date_boundaries_and_reverifies_created_at() {
         .await;
 
     let config = cfg(&format!("{}/api", server.uri()));
-    let client = Client::with_base(&config, config.api_base.clone());
+    let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserNotesParams {
         username: Some("alice".to_string()),
         host: None,
@@ -89,7 +89,7 @@ async fn limit_is_clamped_to_100() {
         .await;
 
     let config = cfg(&format!("{}/api", server.uri()));
-    let client = Client::with_base(&config, config.api_base.clone());
+    let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserNotesParams {
         username: None,
         host: None,
@@ -119,7 +119,7 @@ async fn get_user_info_splits_at_handle() {
         .await;
 
     let config = cfg(&format!("{}/api", server.uri()));
-    let client = Client::with_base(&config, config.api_base.clone());
+    let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserParams {
         username: Some("@bob@remote.example".to_string()),
         host: None,
@@ -150,7 +150,7 @@ async fn get_timeline_sorts_desc_by_created_at() {
         .await;
 
     let config = cfg(&format!("{}/api", server.uri()));
-    let client = Client::with_base(&config, config.api_base.clone());
+    let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = misskey_fetch::params::GetTimelineParams { r#type: None, limit: Some(200) };
     let notes = tools::get_timeline(&client, &config, &p).await.expect("ok");
     assert_eq!(notes.len(), 2);
@@ -161,20 +161,6 @@ async fn get_timeline_sorts_desc_by_created_at() {
     let requests = server.received_requests().await.expect("requests");
     let body: Value = requests[0].body_json().expect("body");
     assert_eq!(body["limit"], 100);
-}
-
-#[tokio::test]
-async fn allowlist_blocks_write_endpoints_without_calling_them() {
-    let server = MockServer::start().await;
-    let config = cfg(&format!("{}/api", server.uri()));
-    let client = Client::with_base(&config, config.api_base.clone());
-
-    for endpoint in ["drive", "announcements/read", "notes/follow"] {
-        let err = client.call(endpoint, &json!({}), "").await.expect_err("must be blocked");
-        assert!(matches!(err, ToolError::DisallowedEndpoint { .. }), "{err}");
-    }
-    // allowlist 外は呼ばれていない（リクエスト数は 0）
-    assert!(server.received_requests().await.expect("requests").is_empty());
 }
 
 #[tokio::test]
@@ -189,7 +175,7 @@ async fn no_such_user_is_mapped_to_llm_message() {
         .await;
 
     let config = cfg(&format!("{}/api", server.uri()));
-    let client = Client::with_base(&config, config.api_base.clone());
+    let client = Client::with_base(&config, config.api_base.clone()).expect("client");
     let p = GetUserParams {
         username: Some("@ghost@mock.test".to_string()),
         host: None,

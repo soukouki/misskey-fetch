@@ -11,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.api_base, config.tz
     );
 
-    let service = MisskeyService::new(config);
+    let service = MisskeyService::new(config)?;
     let server = service.serve(rmcp::transport::stdio()).await?;
     server.waiting().await?;
     Ok(())
