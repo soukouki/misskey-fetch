@@ -31,7 +31,7 @@ impl MisskeyService {
 impl MisskeyService {
     #[tool(
         name = "get_timeline",
-        description = "Returns the latest notes from a Misskey timeline (type: home | local | global, default local), sorted by createdAt descending. No date parameters are accepted. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy. Results may be truncated: the response is a page object carrying truncated, nextCursor (the untilId to continue) and an English message."
+        description = "Returns the latest notes from a Misskey timeline (type: home | local | global, default local), sorted by createdAt descending. No date parameters are accepted. Each note carries user {name, handle, isBot}, text, cw, visibility, isHidden, poll, files, channel, and reply / renote as explicit relation objects ({state: none | notJoined | notFound | present, id, note}). In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy. Results may be truncated: the response is a page object carrying truncated, nextCursor (the untilId to continue) and an English message."
     )]
     async fn get_timeline(
         &self,
@@ -44,7 +44,7 @@ impl MisskeyService {
 
     #[tool(
         name = "get_user_info",
-        description = "Returns the profile and recent notes of a user (default: the authenticated user of MISSKEY_TOKEN). Pass handle as @username or @username@host; a value without @ is rejected; host omitted means the instance host derived from MISSKEY_API_URL. Returns the user object directly, without a page wrapper. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy."
+        description = "Returns the profile and recent notes of a user (default: the authenticated user of MISSKEY_TOKEN). Pass handle as @username or @username@host; a value without @ is rejected; host omitted means the instance host derived from MISSKEY_API_URL. Returns {user: {name, handle, isBot}, description, pinnedNotes, recentNotes} directly, without a page wrapper. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy."
     )]
     async fn get_user_info(&self, params: Parameters<GetUserParams>) -> Result<CallToolResult, ErrorData> {
         Ok(render(tools::get_user_info(&self.client, &self.config, &params.0).await))
@@ -52,7 +52,7 @@ impl MisskeyService {
 
     #[tool(
         name = "get_user_notes",
-        description = "Returns a user's notes (default: the authenticated user of MISSKEY_TOKEN), sorted by createdAt descending. Pass handle as @username or @username@host; a value without @ is rejected; host omitted means the instance host derived from MISSKEY_API_URL. Date input is ISO 8601 (YYYY-MM-DD, optional time; offset optional, no-offset means TZ wall-clock); relative expressions (now, -1d) are not accepted. after / before are exclusive boundaries. In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy. Results may be truncated: the response is a page object carrying truncated, nextCursor (the untilId to continue) and an English message."
+        description = "Returns a user's notes (default: the authenticated user of MISSKEY_TOKEN), sorted by createdAt descending. Pass handle as @username or @username@host; a value without @ is rejected; host omitted means the instance host derived from MISSKEY_API_URL. Date input is ISO 8601 (YYYY-MM-DD, optional time; offset optional, no-offset means TZ wall-clock); relative expressions (now, -1d) are not accepted. after / before are exclusive boundaries. Each note carries user {name, handle, isBot}, text, cw, visibility, isHidden, poll, files, channel, and reply / renote as explicit relation objects ({state: none | notJoined | notFound | present, id, note}). In the response, cw is the content-warning text and text is the body folded behind it in the UI; isHidden means the note is hidden by policy. Results may be truncated: the response is a page object carrying truncated, nextCursor (the untilId to continue) and an English message."
     )]
     async fn get_user_notes(
         &self,

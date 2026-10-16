@@ -6,3 +6,4 @@ pub mod misskey;
 pub mod params;
 pub mod service;
 pub mod tools;
+pub mod view;

@@ -31,6 +31,9 @@ pub enum ToolError {
 
     #[error("HTTP error: {message}")]
     Http { message: String },
+
+    #[error("Inconsistent API response: {field} is present without its id")]
+    InconsistentResponse { field: String },
 }
 
 impl From<DateError> for ToolError {

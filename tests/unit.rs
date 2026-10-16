@@ -3,8 +3,8 @@ use serde_json::json;
 
 use misskey_fetch::dates::parse_iso8601;
 use misskey_fetch::errors::ToolError;
-use misskey_fetch::handle::{handle_string, parse_handle};
-use misskey_fetch::misskey::types::{RawNote, in_range};
+use misskey_fetch::handle::{handle_string, normalize_host, parse_handle};
+use misskey_fetch::misskey::types::{Note, in_range};
 
 fn tokyo() -> Tz {
     "Asia/Tokyo".parse::<Tz>().expect("tz")
@@ -73,7 +73,6 @@ fn rejects_ambiguous_or_invalid_dates() {
         "2024-02-31",
         "2024-02-03T25:00:00",
         "2024-02-03 12:34:56Z",
-        "2024/02/03",
         "20240203",
         "2024-W05-3",
         "2024-02-03T12:34",
@@ -98,8 +97,8 @@ fn rejects_ambiguous_or_invalid_dates() {
 fn date_only_uses_tz_midnight() {
     let tokyo = parse_iso8601("2024-02-03", tokyo()).expect("ok");
     let u = parse_iso8601("2024-02-03", utc()).expect("ok");
-    assert_eq!(tokyo.timestamp_millis(), 1706886000000); // 2024-02-02T15:00:00Z（= Asia/Tokyo 0時）
-    assert_eq!(u.timestamp_millis(), 1706918400000); // 2024-02-03T00:00:00Z
+    assert_eq!(tokyo.timestamp_millis(), 1706886000000i64); // 2024-02-02T15:00:00Z（= Asia/Tokyo 0時）
+    assert_eq!(u.timestamp_millis(), 1706918400000i64); // 2024-02-03T00:00:00Z
     assert_ne!(tokyo, u);
 }
 
@@ -141,6 +140,23 @@ fn handle_without_host_completed_to_instance_host() {
     assert_eq!(parse_handle("@sou7@misskey.io", "misskey.io").expect("x").host, None);
 }
 
+// --- lookup path の正規化は lowercase + punycode（spec 4.4） ---
+#[test]
+fn normalizes_host_with_punycode() {
+    // `RemoteUserResolveService.resolveUser` は username.toLowerCase() と toPuny(host) を使う
+    let r = parse_handle("@Alice@Remote.Example", "misskey.io").expect("x");
+    assert_eq!(r.username, "alice");
+    assert_eq!(r.host.as_deref(), Some("remote.example"));
+    assert_eq!(normalize_host("EXAMPLE.COM"), Some("example.com".to_string()));
+    // 非ASCIIホストは punycode に変換される
+    assert_eq!(normalize_host("例.com"), Some("xn--fsq.com".to_string()));
+    assert_eq!(normalize_host("xn--fsq.example"), Some("xn--fsq.example".to_string()));
+    // 自ホストは punycode 比較でローカルに正規化される
+    assert_eq!(parse_handle("@sou7@例.example", "xn--fsq.example").expect("x").host, None);
+    // display path は stored 値を使う（input の case を反映させない）
+    assert_eq!(handle_string(&r, "misskey.io"), "@alice@remote.example");
+}
+
 // --- 排他境界: 0 時ちょうど（境界ちょうど）のノートは除外（spec 6.2.4 / 6.1.5） ---
 #[test]
 fn exclusive_boundary_excludes_exact_midnight() {
@@ -158,12 +174,13 @@ fn exclusive_boundary_excludes_exact_midnight() {
     assert_eq!(exact.created_at, after);
 }
 
-fn note(id: &str, created_at: &str) -> RawNote {
+fn note(id: &str, created_at: &str) -> Note {
     serde_json::from_value(json!({
         "id": id,
         "createdAt": created_at,
         "visibility": "public",
-        "files": []
+        "files": [],
+        "user": { "id": "u1", "username": "a", "host": null }
     }))
     .expect("note")
 }

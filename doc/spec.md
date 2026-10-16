@@ -15,35 +15,115 @@
 ### 2.2 実装範囲
 - **提供機能**: 読み取り専用（Read-only）。投稿作成やユーザーデータの変更機能は含まない。
 - **データ形式**: ノートのテキストおよびメタデータ（作成日時、ユーザーIDなど）を返す。画像データやメディアファイルのバイナリ処理は行わない。
-- **ID隠蔽**: 内部的な `userId` 等のIDはサーバー側で解決し、LLMにはユーザー名やハンドルなど、人間が解釈可能な識別子で提示する。
+- **ID隠蔽**: 内部的な `userId` 等のIDはサーバー側で解決し、LLMにはユーザー名やハンドルなど、人間が解釈可能な識別子で提示する。LLMが解釈できる識別子は `name` と `handle` のみであり、`userId` は view に含めない。
 - **全文検索**: 本文検索は本仕様の対象外（必要時のみ任意機能として扱う。6.1参照）。
 
 ## 3. アーキテクチャ
 本サーバーはMCP（Model Context Protocol）仕様に基づき、JSON-RPCを介してLLMにツールを提供し、内部的にMisskey REST APIを呼び出すプロキシとして動作する。
 
+データは2層で扱う。
+
+1. **内部表現**（4.1）: Misskey API の応答をそのまま受ける型。model の shape を反映する。
+2. **view**（4.2）: LLM に返す型。`userId` を除き、`handle` を文字列として持つ。view layer の関数は `instance_host` を引数として取る。
+
 ## 4. データモデル
-### 4.1 Note オブジェクト
-- `createdAt`: 作成日時 (ISO 8601 拡張方式)。Misskey はノートIDから導出した RFC3339 文字列で返す。
-- `text`: 投稿本文
-- その他、Misskey APIが提供するノート関連のメタデータ
 
-### 4.2 NoteWithUser オブジェクト
-- Noteオブジェクトのフィールドに加え、以下のフィールドを付与する。
-- `name`: 表示名。Misskey の `UserLite.name` は nullable であり、表示名のないユーザーは `null` になる。
-- `handle`: `@username@host.domain` 形式のハンドル
-- `noteType`: `note` | `renote` | `reply`。判定優先順位は `renote` > `reply` > `note`（引用リポストは `renote`）。pure renote（本文・cw・ファイル・poll なし）は `text` が `null` であり、LLM は `noteType` で判別する。
-- `hasCw`: `cw` が存在するか。`cw` は警告文（UIで常時表示）であり `text` はその隠された本文である。
-- `isHidden`: Misskey のポリシーにより隠されたノート（`hideNote()` は `text`/`cw` を null にするため、`hasCw` なしでは pure renote と区別できない）。
-- `visibility`: `public` | `home` | `followers` | `specified`
-- **すべてのノート返却は NoteWithUser を用いる**（5.3の返却型と統一）。renote / reply が混ざると著者が queried user と異なるため、著者はノートごとに解決して提示する。
-- **入れ子 renote の深さ上限は 10**。上限到達時は `renote` を `null` とし、`renoteDepthLimited` を true にする。
+### 4.1 内部表現（API 応答の型）
 
-### 4.3 User オブジェクト
-- `name`: 表示名（nullable）
-- `handle`: `@username@host.domain` 形式のハンドル
-- `description`: 自己紹介文
-- `pinnedNotes`: ピン留め投稿（`users/show` から取得）
-- `recentNotes`: 最近の投稿 (10件程度)。`users/show` には含まれないため `users/notes`（limit 10）の追加呼び出しで取得する。
+**Note**
+- `id`: ノートID（Misskey の `misskey:id`。LLM に渡す）
+- `createdAt`: 作成日時。Misskey は `idService.parse(id).date.toISOString()` から導出する。compliant な Misskey では常に ISO 8601 UTC。解析不能なら応答全体を失敗させる（防御分岐を持たない）
+- `user`: `UserLite`（required + non-nullable。pack は `user` を常に emit する）
+- `text`: 本文（nullable）。pack 時に `note.name && (note.url ?? note.uri)` の条件で書き換えられることがある（stored 値と view 値が異なる）
+- `cw`: 警告文（nullable）。UI で常時表示される。`text` はその折りたまれた本文
+- `visibility`: `public` | `home` | `followers` | `specified`。pack 時の effective visibility（`treatVisibility` が user policy で public/home を followers に書き換えることがある）
+- `isHidden`: viewer-relative の relation（`shouldHideNote(packed, meId)` は meId に依存する）。ノート固有の property ではない
+- `poll`: detail gate 内
+- `files`: `DriveFile[]`
+- `channel`: conditional（`channel ? {...} : undefined`）
+- `replyId` / `renoteId`: **常に pack される**（detail gate がない）
+- `reply` / `renote`: detail gate 内（4.3）
+
+**UserLite**
+- `id`, `name`(nullable), `username`, `host`(nullable), `isBot`
+
+**UserDetailed** = UserLite + `description`(nullable) + `pinnedNotes`
+- `users/show` は常に `schema: 'UserDetailed'` で pack するため `pinnedNotes` は常に存在する（optional ではない）
+- note の著者は常に `UserLite` であり `description`/`pinnedNotes` を持たない
+- この2つの shape は別型として持つ。1つの struct に潰すと「detailed だが bio が空」と「lite shape では field が存在しない」を区別できず、存在しなかった field が `null` として LLM に返る
+
+**DriveFile**
+- `name`, `type`(mime), `size`, `isSensitive`, `url`, `comment`(nullable)
+
+**Poll**
+- `expiresAt`(nullable), `multiple`, `choices[{text, votes, isVoted}]`
+
+**Channel**
+- `name`, `isSensitive`
+
+**型で表現しないもの（model にない、または view に不要）**
+- `noteType`: product から導出される projection であり partition ではない。Misskey の actual partition は `PureRenote ⊎ Content` の2分のみ。`isQuotePacked` の disjunct に `replyId != null` があるため Quote ∩ Reply ≠ ∅。判定優先順位は decision であり model の事実ではない
+- `hasCw`: `cw != null` と同値（redundant）
+- `reactionCount`: `Σ reactions` から導出
+- `emojis` / `reactionEmojis`: LLM に不要（drawing data）
+- `deletedAt`: api-doc に宣言があるが `pack()` が emit しない
+- `reactionAndUserPairCache`: opt-in flag が必要で、それを set する endpoint がない
+
+**detail gate**: `clippedCount`, `reply`, `renote`, `poll`, `myReaction` は `detail: true` のときだけ shape に含まれる。
+- `users/notes` / timeline の top-level note は `detail: true`
+- 入れ子 `reply` は `detail: false`、入れ子 `renote` は `detail: true` で pack される（非対称）
+- detail gate は **API 側の選択**であり model の制約ではない。`replyId` set + `poll` set + `text` null のノートは `notes/create` の paramDef で作成できる（`if` 条件に `replyId` がない）。`hasPoll` は stored column なので model は「この reply に poll がある」ことを保持し、lite packing がそれを落としているだけ
+
+**invariant**: entity present ⇒ FK present。これは型ではなく実行時 check で検証する（drift はエラー）。
+
+### 4.2 view（MCP 出力）
+
+**NoteView**
+- `id`, `createdAt`, `user`(UserView), `text`, `cw`, `visibility`, `isHidden`, `poll`, `files`, `channel`, `reply`(Relation), `renote`(Relation)
+
+**UserView**
+- `name`(nullable), `handle`, `isBot`
+
+**UserViewDetailed** = UserView + `description` + `pinnedNotes` + `recentNotes`
+- `pinnedNotes` は model の field（`UserDetailed`）。`recentNotes` は model の field ではなく view layer の組み立てであり、`users/notes`（limit 10）の追加呼び出しで埋める
+
+**FileView**: `name`, `mime`, `size`, `isSensitive`, `url`, `comment`
+**PollView**: `expiresAt`, `multiple`, `choices[{text, votes}]`（`isVoted` は view に含めない）
+**ChannelView**: `name`, `isSensitive`
+
+view に含めないもの: `userId`, `noteType`, `hasCw`, `renoteDepthLimited`, `reactionCount`, `emojis`, `deletedAt`, `reactionAndUserPairCache`, `clippedCount`, `myReaction`, `visibleUserIds`, `tags`, `mentions`, `uri`, `url`, `localOnly`, `reactionAcceptance`, `renoteCount`, `repliesCount`, `fileIds`, `isVoted`。
+
+### 4.3 Relation（4状態）
+
+`reply` / `renote` は relation として1軸で持つ（`reply` と `replyId` は独立 field ではない。invariant: entity present ⇒ FK present）。
+
+- `none` — FK が null（relation がない）
+- `notJoined` — FK はあるが entity が応答に含まれていない（detail gate、または depth 上限で打ち切り）
+- `notFound` — FK はあるが entity が null（対象が削除済み）
+- `present` — entity が存在する
+
+JSON は明示的な tagged structure:
+
+```json
+{"state":"none"}
+{"state":"notJoined","id":"01..."}
+{"state":"notFound","id":"01..."}
+{"state":"present","id":"01...","note":{...}}
+```
+
+**3状態の collapse**: serde は key absent と null を区別できない（`Option<Option<T>>` でも同一になる）。`notJoined` / `notFound` の区別は detail gate の位置から導出する — その note が `detail: false` で pack された（入れ子 reply）なら entity の不在は `notJoined`、`detail: true` なら `notFound`。depth 上限での打ち切りも `notJoined` とする（「応答に含まれなかった」の同一意味）。専用の flag field は持たない。
+
+cycle は model で不可能（renote の対象は renote 作成時点で存在しなければならない）。depth 上限（10）は hostile な instance に対する size policy であり model の性質ではない。
+
+### 4.4 ハンドルの正規化
+
+- 入力は `@username` または `@username@host`。`@` で始まらない入力はエラー。
+- host 省略（`@username`）はインスタンスホスト補完（= ローカルユーザー）。
+- 解析した host がインスタンスホストと一致する場合はローカルに正規化する（`users/show` には `null`）。Misskey はローカルユーザーを `host: null` で保存するため、自ホストを remote host として渡すと失敗する。
+- **正規化は lookup path だけ**: username は lowercase、host は lowercase + punycode（`RemoteUserResolveService.resolveUser` は `username.toLowerCase()` と `utilityService.toPuny(host)` を使う。`host === toPuny(config.host)` で local と判定する）。
+- **display path は API が返した stored 値を使う**: remote user の username は case を保存する。input の case を display に反映させない。
+- 内部表現（`UserRef { username, host }`）と出力表現（canonical `handle` 文字列）は別物である。`UserRef` には handle 文字列も `id` もない。
+- round-trip: `parse_handle("@user")` → `UserRef{user, None}` → `handle_of` → `@user@{instance_host}`。1回目は input と output が異なる文字列になる。2回目以降は不動点。この非対称は仕様である。
 
 ## 5. インターフェース仕様 (MCPツール)
 
@@ -52,7 +132,7 @@
 - **引数**:
     - `type`: `home` | `local` | `global` (省略時は `local`)
     - `limit`: 取得件数（デフォルト 20、要求上限 1000。1リクエストの上限は100）
-- **戻り値**: `NotesPage`（5.4）、`createdAt` 降順
+- **戻り値**: `PageView`（5.4）、`createdAt` 降順
 - **対応エンドポイント**: `home` → `notes/timeline`（`read:account` 必須）、`local` → `notes/local-timeline`、`global` → `notes/global-timeline`
 - **並び順**: Misskey はID順で返す。remote ノートはID生成元が異なるため `createdAt` 降順と一致しないことがある。**返却前に `createdAt` でソートすること。**
 - muting / blocking / channel muting は Misskey サーバー側で適用される。適用された結果が返ることを README に明記する。
@@ -60,14 +140,13 @@
 ### 5.2 `get_user_info`
 特定ユーザーの情報を取得する。
 - **引数**:
-    - `handle`: `@username` または `@username@host`
+    - `handle`: `@username` または `@username@host`（4.4 の規則）
         - 値は `@` で始まっていなければならない。`@` がない入力はエラー。
         - `@username@host` 形式は **username と host に分割して** API に渡す（`username` フィールドに `@user@host` をそのまま渡してはいけない）。
         - host 省略（`@username`）はインスタンスホスト補完（= ローカルユーザー）。
         - 解析した host がインスタンスホストと一致する場合はローカルに正規化する（`users/show` には `null`）。
         - 省略時は `MISSKEY_TOKEN` に紐づく認証済みユーザーを取得する（`users/me`）。
-- **戻り値**: User オブジェクト
-- **ローカルホストの表現**: `users/show` の応答では `null`、`notes/search` のパラメータでは `.`。内部で変換する。
+- **戻り値**: `UserViewDetailed`（4.2）。ページラッパーは付けない。
 - **エラー**: `NO_SUCH_USER` (404) / `FAILED_TO_RESOLVE_REMOTE_USER` を LLM向けメッセージに変換する（6.2.4）。
 
 ### 5.3 `get_user_notes`
@@ -81,11 +160,11 @@
         - `after > before` はエラー。
     - `limit`: 取得件数（デフォルト 100、要求上限 1000。1リクエストの上限は100）。100超はページネーションで叶える（6.1.4）。
     - `includeRenotes`: デフォルト true（Misskey API の `withRenotes` と一致）。renote を「投稿」に含めるかは README に明記。
-- **戻り値**: `NotesPage`（5.4）、`createdAt` 降順
+- **戻り値**: `PageView`（5.4）、`createdAt` 降順
 
-### 5.4 `NotesPage` オブジェクト
+### 5.4 `PageView` オブジェクト
 `get_timeline` と `get_user_notes` の返却型。
-- `notes`: `NoteWithUser[]`、`createdAt` 降順
+- `notes`: `NoteView[]`、`createdAt` 降順
 - `truncated`: 要求件数に対して省略した部分があるかどうか
 - `nextCursor`: 続きを取得する場合の `untilId`（最後の返却ノートのID）。省略時は `null`
 - `message`: `truncated` が true のときのみ存在し、LLM に省略を伝える英語の指示文（表示件数と `nextCursor` への続きの指示を含む）
@@ -123,7 +202,7 @@
 - `MISSKEY_API_URL`: APIベースURL (例: `https://misskey.io/api`)
 - `TZ`: タイムゾーン（**デフォルトなし。未設定は起動エラー**。`chrono-tz` は環境変数を自動で読まないため、明示的に文字列として解析する）
 
-起動時にすべて検証すること。`MISSKEY_API_URL` は scheme を https に限定し、リダイレクトを追わない（token の別origin漏洩防止）。token をログ・エラーメッセージに出さない。
+起動時にすべて検証すること。`MISSKEY_API_URL` は scheme を https に限定し、リダイレクトを追わない（token の別origin漏洩防止）。token をログ・エラーメッセージに出さない。`instance_host` は punycode で保存する。
 
 ### 6.4 HTTP 層
 - 1リクエストの `limit` は Misskey API の上限（100）で clamp する。要求件数（5.4 の `limit`）は 1000 に clamp する。
@@ -138,6 +217,6 @@
 - **必要権限（Scope）**:
     - `read:account`: 認証ユーザーのアイデンティティ確認および「ホーム」タイムライン、および限定公開ノートへのアクセスに必要。
     - ※公開ノートおよび公開プロフィール情報の取得は、認証済みユーザーとしてアクセスすることで可能であり、別途のスコープは不要。
-- **メディア処理**: 画像や動画のファイル解析は行わず、URL等のテキスト情報のみを返す。
+- **メディア処理**: 画像や動画のファイル解析は行わず、URL等のテキスト情報のみを返す。LLM は画像をダウンロードして開けるため、file の `url` は view に含める。
 - **機能制限**: リスト、アンテナ、チャンネルの管理機能は現時点での実装対象外とする。
 - **トークンサイズ**: 1000ノートの JSON は LLM コンテキストに対して大きい。本文 truncation、`cw`（content warning）と nsfw の扱いを README に明記する。

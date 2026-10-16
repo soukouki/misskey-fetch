@@ -6,18 +6,19 @@ use crate::dates::parse_iso8601;
 use crate::errors::ToolError;
 use crate::handle::{handle_string, parse_handle};
 use crate::misskey::client::Client;
-use crate::misskey::types::{self, NoteWithUser, NotesPage, RawNote, RawUser, UserWithNotes};
+use crate::misskey::types::{self, Note, UserDetailed};
 use crate::params::{
     API_MAX_LIMIT, DEFAULT_TIMELINE_LIMIT, DEFAULT_USER_NOTES_LIMIT, MAX_PAGES, MAX_TOTAL_LIMIT,
-    RECENT_NOTES_LIMIT, TimelineType, clamp_limit, GetTimelineParams, GetUserNotesParams, GetUserParams,
+    RECENT_NOTES_LIMIT, GetTimelineParams, GetUserNotesParams, GetUserParams, TimelineType, clamp_limit,
 };
+use crate::view::{PageView, UserViewDetailed, to_user_view, to_view};
 
 /// `get_timeline`（spec 5.1）。ページ単位で `untilId` によりサーバ側ページネーションする。
 pub async fn get_timeline(
     client: &Client,
     cfg: &Config,
     p: &GetTimelineParams,
-) -> Result<NotesPage, ToolError> {
+) -> Result<PageView, ToolError> {
     let timeline_type = p.r#type.unwrap_or_default();
     let endpoint = match timeline_type {
         TimelineType::Home => "notes/timeline",
@@ -27,7 +28,7 @@ pub async fn get_timeline(
     let requested = p.limit.unwrap_or(DEFAULT_TIMELINE_LIMIT);
     let effective = clamp_limit(p.limit, DEFAULT_TIMELINE_LIMIT);
 
-    let mut collected: Vec<RawNote> = Vec::new();
+    let mut collected: Vec<Note> = Vec::new();
     let mut until_id: Option<String> = None;
     let mut pages_used: u32 = 0;
 
@@ -60,30 +61,35 @@ pub async fn get_timeline(
     }
 
     let stats = page_stats(requested, effective, collected.len(), pages_used, false);
-    Ok(build_page(&mut collected, None, &cfg.instance_host, &stats))
+    build_page(&mut collected, &cfg.instance_host, &stats)
 }
 
-/// `get_user_info`（spec 5.2）。User object をそのまま返す（ページラッパーなし）。
+/// `get_user_info`（spec 5.2）。`UserViewDetailed` をそのまま返す（ページラッパーなし）。
 pub async fn get_user_info(
     client: &Client,
     cfg: &Config,
     p: &GetUserParams,
-) -> Result<UserWithNotes, ToolError> {
+) -> Result<UserViewDetailed, ToolError> {
     let user = resolve_user(client, cfg, p.handle.as_deref()).await?;
-    let handle = types::handle_of(&user, &cfg.instance_host);
+    let handle = handle_string(
+        &crate::handle::UserRef {
+            username: user.lite.username.clone(),
+            host: user.lite.host.clone(),
+        },
+        &cfg.instance_host,
+    );
 
     // recentNotes は users/notes (limit 10) の追加呼び出しで埋める（spec 4.3）
-    let body = json!({ "userId": user.id, "limit": RECENT_NOTES_LIMIT });
+    let body = json!({ "userId": user.lite.id, "limit": RECENT_NOTES_LIMIT });
     let value = client.call("users/notes", &body, &handle).await?;
     let mut recent_raw = as_notes(&value)?;
     types::sort_desc(&mut recent_raw);
 
-    Ok(UserWithNotes {
-        name: user.name.clone(),
-        handle,
+    Ok(UserViewDetailed {
+        user: to_user_view(&user.lite, &cfg.instance_host),
         description: user.description.clone(),
-        pinned_notes: views(&user.pinned_notes, Some(&user), &cfg.instance_host),
-        recent_notes: views(&recent_raw, Some(&user), &cfg.instance_host),
+        pinned_notes: views(&user.pinned_notes, &cfg.instance_host)?,
+        recent_notes: views(&recent_raw, &cfg.instance_host)?,
     })
 }
 
@@ -92,9 +98,15 @@ pub async fn get_user_notes(
     client: &Client,
     cfg: &Config,
     p: &GetUserNotesParams,
-) -> Result<NotesPage, ToolError> {
+) -> Result<PageView, ToolError> {
     let user = resolve_user(client, cfg, p.handle.as_deref()).await?;
-    let handle = types::handle_of(&user, &cfg.instance_host);
+    let handle = handle_string(
+        &crate::handle::UserRef {
+            username: user.lite.username.clone(),
+            host: user.lite.host.clone(),
+        },
+        &cfg.instance_host,
+    );
 
     let after = p
         .after
@@ -116,7 +128,7 @@ pub async fn get_user_notes(
     let effective = clamp_limit(p.limit, DEFAULT_USER_NOTES_LIMIT);
     let include_renotes = p.include_renotes.unwrap_or(true);
 
-    let mut collected: Vec<RawNote> = Vec::new();
+    let mut collected: Vec<Note> = Vec::new();
     let mut until_id: Option<String> = None;
     let mut pages_used: u32 = 0;
     let mut hit_boundary = false;
@@ -128,7 +140,7 @@ pub async fn get_user_notes(
         pages_used += 1;
         let page_size = (effective as usize - collected.len()).min(API_MAX_LIMIT as usize);
         let mut body = json!({
-            "userId": user.id,
+            "userId": user.lite.id,
             "limit": page_size,
             "withRenotes": include_renotes,
         });
@@ -167,23 +179,17 @@ pub async fn get_user_notes(
     }
 
     let stats = page_stats(requested, effective, collected.len(), pages_used, hit_boundary);
-    Ok(build_page(&mut collected, Some(&user), &cfg.instance_host, &stats))
+    build_page(&mut collected, &cfg.instance_host, &stats)
 }
 
 /// 返ってきた件数を `createdAt` で厳密検証して範囲外を落とす（spec 6.1.5）。
-fn past_boundary(note: &RawNote, after: Option<DateTime<Utc>>) -> bool {
+fn past_boundary(note: &Note, after: Option<DateTime<Utc>>) -> bool {
     after.is_some_and(|a| note.created_at <= a)
 }
 
 /// `truncated` は、要求 limit が 1000 に clamp された場合、またはページ / 境界が
 /// 要求件数を満たす前に停止した場合（空ページ=データ尽きは除く）。
-fn page_stats(
-    requested: u32,
-    effective: u32,
-    collected: usize,
-    pages_used: u32,
-    hit_boundary: bool,
-) -> PageStats {
+fn page_stats(requested: u32, effective: u32, collected: usize, pages_used: u32, hit_boundary: bool) -> PageStats {
     let clamped = requested > MAX_TOTAL_LIMIT;
     let short = (collected as u32) < effective;
     PageStats {
@@ -199,15 +205,13 @@ struct PageStats {
     truncated: bool,
 }
 
-fn build_page(
-    collected: &mut [RawNote],
-    fallback: Option<&RawUser>,
-    instance_host: &str,
-    stats: &PageStats,
-) -> NotesPage {
+fn build_page(collected: &mut [Note], instance_host: &str, stats: &PageStats) -> Result<PageView, ToolError> {
     types::sort_desc(collected);
-    let notes = views(collected, fallback, instance_host);
-    let next_cursor = stats.truncated.then(|| collected.last().map(|n| n.id.clone())).flatten();
+    let notes = views(collected, instance_host)?;
+    let next_cursor = stats
+        .truncated
+        .then(|| collected.last().map(|n| n.id.clone()))
+        .flatten();
     let message = stats.truncated.then(|| {
         let base = format!(
             "Showing {} notes of {} requested; the rest is omitted.",
@@ -218,29 +222,25 @@ fn build_page(
             None => base,
         }
     });
-    NotesPage {
+    Ok(PageView {
         notes,
         truncated: stats.truncated,
         next_cursor,
         message,
-    }
+    })
 }
 
-fn views(collected: &[RawNote], fallback: Option<&RawUser>, instance_host: &str) -> Vec<NoteWithUser> {
+fn views(collected: &[Note], instance_host: &str) -> Result<Vec<crate::view::NoteView>, ToolError> {
     collected
         .iter()
-        .map(|n| types::to_view(n, fallback, instance_host))
+        .map(|n| to_view(n, instance_host))
         .collect()
 }
 
-async fn resolve_user(
-    client: &Client,
-    cfg: &Config,
-    handle: Option<&str>,
-) -> Result<RawUser, ToolError> {
+async fn resolve_user(client: &Client, cfg: &Config, handle: Option<&str>) -> Result<UserDetailed, ToolError> {
     let Some(raw) = handle.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
         let value = client.call("users/me", &json!({}), "").await?;
-        return serde_json::from_value::<RawUser>(value).map_err(|e| ToolError::Http {
+        return serde_json::from_value::<UserDetailed>(value).map_err(|e| ToolError::Http {
             message: e.to_string(),
         });
     };
@@ -251,13 +251,13 @@ async fn resolve_user(
     let display = handle_string(&r, &cfg.instance_host);
 
     let value = client.call("users/show", &body, &display).await?;
-    serde_json::from_value::<RawUser>(value).map_err(|e| ToolError::Http {
+    serde_json::from_value::<UserDetailed>(value).map_err(|e| ToolError::Http {
         message: e.to_string(),
     })
 }
 
-fn as_notes(value: &Value) -> Result<Vec<RawNote>, ToolError> {
-    serde_json::from_value::<Vec<RawNote>>(value.clone()).map_err(|e| ToolError::Http {
+fn as_notes(value: &Value) -> Result<Vec<Note>, ToolError> {
+    serde_json::from_value::<Vec<Note>>(value.clone()).map_err(|e| ToolError::Http {
         message: e.to_string(),
     })
 }

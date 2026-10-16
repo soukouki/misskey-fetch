@@ -69,11 +69,12 @@ fn normalize_api_base(raw: &str) -> Option<String> {
 }
 
 /// API ベース URL のホスト部（`@user@host` のローカルホスト表現に使う）。
+/// `instance_host` は punycode で保存する（spec 6.3）。Misskey は `toPuny(host)` で比較する。
 fn host_of(api_base: &str) -> Option<String> {
     let rest = api_base.get(8..)?;
     let host = rest.split('/').next()?;
     if host.is_empty() {
         return None;
     }
-    Some(host.to_string())
+    crate::handle::normalize_host(host)
 }
