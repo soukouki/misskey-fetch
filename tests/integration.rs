@@ -347,6 +347,26 @@ async fn get_timeline_sorts_desc_by_created_at() {
     assert!(page.notes[1].is_hidden);
     assert!(!page.truncated);
 
+    // view の JSON shape（spec 4.2）
+    let json = serde_json::to_value(&page.notes[0]).expect("json");
+    assert_eq!(
+        json,
+        json!({
+            "id": "aa",
+            "createdAt": "2024-02-03T00:00:00Z",
+            "user": { "name": "B", "handle": "@b@mock.test", "isBot": true },
+            "text": "newer",
+            "cw": "warning",
+            "visibility": "home",
+            "isHidden": false,
+            "poll": null,
+            "files": [{ "name": "img.png", "mime": "image/png", "size": 1234, "isSensitive": true, "url": "https://cdn.mock.test/img.png", "comment": null }],
+            "channel": null,
+            "reply": { "state": "none" },
+            "renote": { "state": "none" }
+        })
+    );
+
     let requests = server.received_requests().await.expect("requests");
     let body: Value = requests[0].body_json().expect("body");
     assert_eq!(body["limit"], 100);
