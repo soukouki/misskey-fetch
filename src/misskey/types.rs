@@ -93,6 +93,8 @@ pub struct NoteWithUser {
     pub visibility: Visibility,
     pub files: Vec<FileView>,
     pub renote: Option<Box<NoteWithUser>>,
+    /// 深度上限（10）で打ち切られた場合 true。
+    pub renote_depth_limited: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,6 +169,7 @@ fn to_view_at_depth(
         Some(u) => handle_of(u, instance_host),
         None => String::new(),
     };
+    let depth_limited = depth >= MAX_RENOTE_DEPTH && note.renote.is_some();
     NoteWithUser {
         created_at: note.created_at,
         name: author.and_then(|u| u.name.clone()),
@@ -186,13 +189,14 @@ fn to_view_at_depth(
                 is_nsfw: f.is_nsfw,
             })
             .collect(),
-        renote: if depth >= MAX_RENOTE_DEPTH {
+        renote: if depth_limited {
             None
         } else {
             note.renote
                 .as_ref()
                 .map(|r| Box::new(to_view_at_depth(r, fallback, instance_host, depth + 1)))
         },
+        renote_depth_limited: depth_limited,
     }
 }
 
