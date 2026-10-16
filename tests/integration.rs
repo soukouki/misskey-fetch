@@ -560,3 +560,30 @@ async fn no_such_user_is_mapped_to_llm_message() {
     assert!(matches!(err, ToolError::NoSuchUser { .. }), "{err}");
     assert!(err.to_string().contains("@ghost@mock.test"));
 }
+
+#[tokio::test]
+async fn trailing_slash_in_api_base_does_not_double_the_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/i"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(user("u1", "me", None)))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/users/notes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    // 末尾スラッシュ付きの MISSKEY_API_URL（よくある形）でも endpoint 結合は 1 スラッシュ
+    let config = cfg(&format!("{}/api/", server.uri()));
+    let client = Client::with_base(&config, config.api_base.clone()).expect("client");
+    let p = GetUserParams { handle: None };
+    let view = tools::get_user_info(&client, &config, &p).await.expect("ok");
+    assert_eq!(view.user.handle, "@me@mock.test");
+
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url.path(), "/api/i", "二重スラッシュになっている");
+    assert_eq!(requests[1].url.path(), "/api/users/notes", "二重スラッシュになっている");
+}

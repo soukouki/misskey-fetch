@@ -56,8 +56,10 @@ impl Config {
     }
 }
 
-/// `https://` に限定し、末尾スラッシュを除去する。
-fn normalize_api_base(raw: &str) -> Option<String> {
+/// `https://` に限定し、末尾スラッシュ（1 個以上、`https://host/api///` のような連続も含む）を除去する。
+/// 末尾スラッシュ付きの `MISSKEY_API_URL` でも、後続の URL 組み立て（`{base}/{endpoint}`）が
+/// `//endpoint` にならないよう、正規化は読み込み時に行う。
+pub fn normalize_api_base(raw: &str) -> Option<String> {
     let trimmed = raw.trim().trim_end_matches('/');
     if !trimmed.starts_with("https://") {
         return None;
@@ -70,7 +72,7 @@ fn normalize_api_base(raw: &str) -> Option<String> {
 
 /// API ベース URL のホスト部（`@user@host` のローカルホスト表現に使う）。
 /// `instance_host` は punycode で保存する（spec 6.3）。Misskey は `toPuny(host)` で比較する。
-fn host_of(api_base: &str) -> Option<String> {
+pub fn host_of(api_base: &str) -> Option<String> {
     let rest = api_base.get(8..)?;
     let host = rest.split('/').next()?;
     if host.is_empty() {

@@ -4,6 +4,7 @@ use serde_json::json;
 use misskey_fetch::cli::{parse, CliError, TransportKind};
 use misskey_fetch::dates::parse_iso8601;
 use misskey_fetch::errors::ToolError;
+use misskey_fetch::config::{host_of, normalize_api_base, Config};
 use misskey_fetch::handle::{handle_string, normalize_host, parse_handle};
 use misskey_fetch::misskey::types::{Note, in_range};
 
@@ -228,4 +229,31 @@ fn cli_rejects_bad_args() {
     assert!(matches!(parse(&args(&["--port"])), Err(CliError::MissingValue { .. })));
     assert!(matches!(parse(&args(&["-x"])), Err(CliError::Unknown { .. })));
     assert!(matches!(parse(&args(&["--help"])), Err(CliError::Help)));
+}
+
+// --- MISSKEY_API_URL の末尾スラッシュ（spec 6.3 の正規化） ---
+#[test]
+fn strips_trailing_slashes_from_api_base() {
+    let norm = |raw: &str| normalize_api_base(raw).map(|s| s.to_string());
+    assert_eq!(norm("https://misskey.example/api/"), Some("https://misskey.example/api".to_string()));
+    assert_eq!(norm("https://misskey.example/api///"), Some("https://misskey.example/api".to_string()));
+    assert_eq!(norm("https://misskey.example/"), Some("https://misskey.example".to_string()));
+    assert_eq!(norm("  https://misskey.example/api/  "), Some("https://misskey.example/api".to_string()));
+    // 正規化後のホスト部も末尾スラッシュの影響を受けない
+    assert_eq!(host_of("https://misskey.example/api"), Some("misskey.example".to_string()));
+    // 不正形は従来どおり拒否
+    assert_eq!(norm("http://misskey.example/api/"), None);
+    assert_eq!(norm("https://"), None);
+}
+
+#[test]
+fn config_from_env_normalizes_trailing_slash() {
+    unsafe {
+        std::env::set_var("MISSKEY_TOKEN", "test-token");
+        std::env::set_var("MISSKEY_API_URL", "https://misskey.example/api/");
+        std::env::set_var("TZ", "Asia/Tokyo");
+    }
+    let cfg = Config::from_env().expect("config");
+    assert_eq!(cfg.api_base, "https://misskey.example/api");
+    assert_eq!(cfg.instance_host, "misskey.example");
 }

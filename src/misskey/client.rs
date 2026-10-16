@@ -33,7 +33,8 @@ impl Client {
             })?;
         Ok(Self {
             http,
-            api_base,
+            // 末尾スラッシュが残ると `{base}/{endpoint}` が `//endpoint` になるため、ここで除去する。
+            api_base: api_base.trim().trim_end_matches('/').to_string(),
             token: cfg.token.clone(),
         })
     }
