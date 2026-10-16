@@ -1,70 +1,38 @@
 # misskey-fetch
 
-Misskey を読むだけの MCP サーバー。JSON-RPC を受け取り、3つのツールを MCP クライアント（LLM）に提供する。書き込みエンドポイントは呼ばない。
+Misskey から情報を読み取るための MCP (Model Context Protocol) サーバーです。
+LLM が Misskey のタイムラインやユーザー情報を取得するためのツールセットを提供します。
 
-Rust（rmcp / reqwest / chrono-tz / schemars / serde）。トランスポートは stdio（既定）と SSE。
+**本サーバーは「読み取り専用」であり、投稿などの書き込み操作は行いません。**
 
-## 実行
+## クイックスタート
 
-| 環境変数 | 必須 | 内容 |
-|---|---|---|
-| `MISSKEY_TOKEN` | はい | トークン。`type: home` を使うなら `read:account`（UI 表示: アカウントの情報を見る）が必要。空だと起動時にエラー（下記「トークンの権限」） |
-| `MISSKEY_API_URL` | はい | `https://` の API ベース URL。末尾スラッシュは除去。http は拒否、リダイレクトは追わない（token が別 origin に漏れないため） |
-| `TZ` | はい | IANA タイムゾーン名（例 `Asia/Tokyo`）。未設定・不正は起動エラー。chrono-tz は env を自動参照しないので明示 parse する |
+### 1. 起動方法
 
-`MISSKEY_API_URL` のホスト部は `instance_host` として保持する（lowercase + punycode）。`handle` の host 省略時に使う。
+#### Docker を使用する場合 (推奨)
+```sh
+docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
+```
+※ SSE モードで起動する場合は `--transport sse --host 0.0.0.0 --port 8080` などの引数を追加してください。
 
-### トークンの権限
-
-Misskey の権限（`kind`）はエンドポイントごとに決まっている。このサーバーが呼ぶ endpoint と、トークンに必要な権限:
-
-| endpoint | 必要な権限 |
-|---|---|
-| `notes/timeline`（`type: home`） | `read:account`（UI 表示: アカウントの情報を見る） |
-| `notes/local-timeline` | なし |
-| `notes/global-timeline` | なし |
-| `users/show` | なし |
-| `users/notes` | なし |
-| `i`（handle 省略時） | `read:account`（UI 表示: アカウントの情報を見る） |
-
-権限が足りないトークンで呼ぶと Misskey は 403 の `PERMISSION_DENIED`（`Your app does not have the necessary permissions to use this endpoint.`）を返す。LLM には `Misskey API error (PERMISSION_DENIED): ...` として出る。
-
-`read:account` はホームタイムライン（フォロー中ユーザーのノート）を見る権限なので、`type: home` を使うなら実質必須。`local` / `global` だけなら権限なしのトークンで動く。書き込み権限は不要（書き込み endpoint は呼ばない）。
-
-Misskey Web の「設定 > API」で発行したトークンは全権限を持つ。アプリ（MiAuth / OAuth）経由のトークンは認可時に選んだ権限だけ持つ。
-
-`handle` を省略したツールは「自分が誰か」を知る必要がある。`users/show` は `userId` / `userIds` / `username` のいずれか必須、`users/notes` は `userId` 必須で、me へのフォールバックがない。したがって認証ユーザーを指す endpoint は `i` だけであり、handle 省略の分岐は構造的に unavoidable。`i` は `read:account` の kind なので、handle 省略を使うなら権限ゼロのトークンでは動かない（`local` / `global` だけなら動く）。
-
+#### Cargo でビルドする場合
 ```sh
 cargo run --locked
 ```
 
-```sh
-cargo run --locked -- --transport sse --port 8080
-```
+### 2. 環境設定
 
-```sh
-docker build -t misskey-fetch .
-docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
-docker run -d --rm -p 8080:8080 -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch --transport sse --host 0.0.0.0 --port 8080
-```
+起動時に以下の環境変数が必要です。
 
-Dockerfile は2つある（どちらも distroless/static-debian12:nonroot に static musl バイナリを入れ、`USER nonroot` で ENTRYPOINT）:
+| 変数名 | 必須 | 説明 |
+|---|---|---|
+| `MISSKEY_TOKEN` | はい | API トークン。自分自身の情報を取得するには `read:account` 権限が必要です。 |
+| `MISSKEY_API_URL` | はい | API のベース URL (例: `https://misskey.io/api`)。 |
+| `TZ` | はい | タイムゾーン (例: `Asia/Tokyo`)。 |
 
-- `Dockerfile`: build context のソースを COPY（通常のローカルビルド）
-- `Dockerfile.git`: `git clone` 前提。build context にソースがない環境用。ビルド時にネットワークが必要（github への clone + crates.io）
+### 3. MCP クライアントの設定例
 
-```sh
-docker build -f Dockerfile.git -t misskey-fetch .
-docker build -f Dockerfile.git --build-arg REF=v0.1.0 -t misskey-fetch .
-docker build -f Dockerfile.git --build-arg REPO_URL=https://example.com/mirror.git --build-arg REF=main -t misskey-fetch .
-```
-
-`REPO_URL` の既定は origin（`https://github.com/soukouki/misskey-fetch.git`）。`REF` は branch / tag（commit SHA は `git clone --branch` で指定できない）。
-
-stdio では stdout は JSON-RPC のみ。ログ（起動情報、429 の backoff、SSE セッションの開閉）は stderr。token は stderr にも出さない。
-
-MCP クライアントの設定例:
+Claude Desktop などの設定ファイルに以下のように追加します。
 
 ```json
 {
@@ -72,8 +40,8 @@ MCP クライアントの設定例:
     "misskey": {
       "command": "misskey-fetch",
       "env": {
-        "MISSKEY_TOKEN": "...",
-        "MISSKEY_API_URL": "https://misskey.io/api",
+        "MISSKEY_TOKEN": "あなたのトークン",
+        "MISSKEY_API_URL": "https://your-instance.sstable/api",
         "TZ": "Asia/Tokyo"
       }
     }
@@ -81,182 +49,52 @@ MCP クライアントの設定例:
 }
 ```
 
-## トランスポート
-
-| 引数 | 内容 |
-|---|---|
-| `--transport` | `stdio`（既定）\| `sse` |
-| `--host` | SSE の bind アドレス（既定 `127.0.0.1`） |
-| `--port` | SSE のポート（既定 `8080`） |
-
-`--host` / `--port` は SSE のときだけ効く。stdio で指定すると stderr に警告を出す。`-h` / `--help` で usage。`--flag=value` 形式も受け付ける。
-
-### SSE（legacy HTTP + Server-Sent Events）
-
-rmcp 3.5.1 には SSE サーバートランスポートがない（`transport-sse-server` は #562 で削除され、後継は streamable HTTP）。レガシー HTTP+SSE プロトコルを `src/sse.rs` で自前実装している。
-
-- `GET /sse` → `event: endpoint` で message endpoint を伝え、以降は `event: message` で応答を流す
-- `POST /messages?sessionId=...`（`/message` も受け付ける）→ JSON-RPC を読み `202 Accepted`。JSON-RPC の応答は SSE 側に出る（POST の body には出ない）
-- handshake（`initialize`）は endpoint 受信後に行われる。ハンドラは handshake を待たずに SSE 応答を返す
-- セッションは SSE 接続が切れた時点で掃除される（切れた sessionId への POST は 404）。接続ごとに service を 1 つ立てる。
-- `Content-Type: text/event-stream`、`Cache-Control: no-cache`。request body は 1 MiB まで。
-
-streamable HTTP（`POST /mcp`）しかサポートしないクライアントには繋がらない。
-
-```json
-{
-  "mcpServers": {
-    "misskey": { "url": "http://127.0.0.1:8080/sse" }
-  }
-}
-```
-
-```sh
-MISSKEY_TOKEN=... MISSKEY_API_URL=https://misskey.io/api TZ=Asia/Tokyo \
-  misskey-fetch --transport sse --host 127.0.0.1 --port 8080
-```
-
-## ツール
+## 利用可能なツール
 
 ### `get_timeline`
-
-| 引数 | 既定 | 内容 |
-|---|---|---|
-| `type` | `local` | `home` \| `local` \| `global` |
-| `limit` | 20 | 1..1000 に clamp |
-
-日付引数は受け付けない。呼ぶ endpoint: `notes/timeline` / `notes/local-timeline` / `notes/global-timeline`。
+タイムラインのノートを取得します。
+- **引数**: 
+    - `type`: `local`, `home`, `global`
+    - `limit`: 取得件数 (1〜1000)
+- **用途**: インスタンスのローカルタイムライン、フォロー中のユーザー、またはグローバルな動向を確認したい時に利用します。
 
 ### `get_user_info`
-
-| 引数 | 既定 | 内容 |
-|---|---|---|
-| `handle` | 認証ユーザー | `@username` または `@username@host` |
-
-`users/show`（handle 省略時は `i`。`i` は `read:account` が必要）でユーザーを解決し、`users/notes`（limit 10）をもう一度呼んで `recentNotes` を埋める。ページラッパーなしで `{user, description, pinnedNotes, recentNotes}` を返す。
+特定のユーザーのプロフィールと最近の投稿を取得します。
+- **引数**:
+    - `handle`: `@username` または `@username@host`。省略すると認証ユーザー（自分）になります。
+- **用途**: 特定のユーザーがどのような人物か、どのような投稿をしているかを把握したい時に利用します。
 
 ### `get_user_notes`
+特定のユーザーの過去の投稿を期間指定などで取得します。
+- **引数**:
+    - `handle`: `@username` または `@username@host`。省略すると自分になります。
+    - `after` / `before`: ISO 8601 形式の日付。
+    - `limit`: 取得件数 (1〜1000)
+- **用途**: 特定のユーザーの過去の言及や、特定の期間の投稿を詳しく分析したい時に利用します。
 
-| 引数 | 既定 | 内容 |
-|---|---|---|
-| `handle` | 認証ユーザー | `@username` または `@username@host` |
-| `after` | なし | ISO 8601。排他境界 |
-| `before` | なし | ISO 8601。排他境界 |
-| `limit` | 100 | 1..1000 に clamp |
-| `includeRenotes` | true | |
+## 利用上の注意点と制約
 
-`after > before` はエラー。呼ぶ endpoint: `users/notes`（`sinceDate` / `untilDate` は epoch ms）。handle 省略時は `i`（`read:account`）で userId を解決してから呼ぶ。
+### トークンの権限について
+- **`read:account` (アカウントの情報を見る)**: 自分のホームタイムラインの取得や、ハンドルを省略して自分自身の情報を取得する場合に必須です。
+- 権限が不足している場合、ツールは `PERMISSION_DENIED` エラーを返します。
 
-## 応答の形
+### 日付の指定方法
+日付は厳格な **ISO 8601 形式**で指定してください。
+- 正しい例: `2024-02-03` または `2024-02-03T10:00:00Z`
+- 相対表現（`now`, `-1d` など）や曖昧な形式は受け付けられません。
 
-`get_timeline` / `get_user_notes` はページオブジェクト、`get_user_info` はそのままユーザーオブジェクト。すべて camelCase。
+### ハンドルの指定方法
+- ハンドルは必ず `@` で始めてください (例: `@user@instance.net`)。
+- `@user` のようにホストを省略した場合は、サーバー設定の `MISSKEY_API_URL` のホストが自動的に適用されます。
 
-```json
-{
-  "notes": [
-    {
-      "id": "aa",
-      "createdAt": "2024-02-03T00:00:00Z",
-      "user": { "name": "B", "handle": "@b@misskey.io", "isBot": true },
-      "text": "本文",
-      "cw": "警告文",
-      "visibility": "home",
-      "isHidden": false,
-      "poll": null,
-      "files": [
-        { "name": "img.png", "mime": "image/png", "size": 1234, "isSensitive": true,
-          "url": "https://cdn.example/img.png", "comment": null }
-      ],
-      "channel": { "name": "ch", "isSensitive": false },
-      "reply": { "state": "none" },
-      "renote": { "state": "notFound", "id": "x1" }
-    }
-  ],
-  "truncated": false,
-  "nextCursor": null,
-  "message": null
-}
-```
+## 開発者向け
 
-- `cw` は警告文（UI で常時表示）、`text` は cw の裏に折りたたまれた本文。
-- `isHidden` はノート固有の property ではなく viewer 相対の relation（policy 由来の隠蔽）。
-- `userId` は view に入れない。LLM に見せる識別子は `name` と `handle` だけ。
-- `reply` / `renote` は 4 状態の tagged object: `none` / `notJoined{id}`（relation はあるが応答に含まれなかった）/ `notFound{id}`（relation があり detail gate は通過したが対象がない）/ `present{id, note}`。入れ子 note の renote chain は深さ 10 で打ち切り、打ち切り点は `notJoined`。
-- `truncated` / `nextCursor` / `message` は省略が発生した場合だけ入る。`message` は英語の文字列で、続きの `untilId` を示す。
-
-## 日付引数
-
-厳格な ISO 8601 だけ受け付ける。曖昧解析はしない（正規化は LLM 側の仕事）。
-
-- `YYYY-MM-DD` だけ: `TZ` の 0 時境界
-- オフセット付き（`Z` / `+09:00`）: そのまま尊重（`TZ` は影響しない）
-- オフセットなしの時刻: `TZ` の壁時計時刻
-- 小数秒は任意桁数（9桁超は nanosecond 分解能で切り捨て）
-- DST で曖昧・非存在の壁時計時刻は `latest()` で解決
-
-拒否: 月日 1 桁、不正日付、範囲外（`25:00` / `12:60` / leap second `:60`）、slash 区切り、相対表現（`now`, `-1d`）、basic format（`20240203`）、週日付、space 区切り、reduced precision。拒否時のメッセージは英語の `Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}`。
-
-境界は排他。日付のみ入力は `TZ` の 0 時境界なので、境界ちょうど（`00:00:00.000`）のノートは除外される。API で粗く絞り込み、返ってきた件数を `createdAt` で厳密検証して範囲外を落とす。
-
-## handle
-
-- `@` で始まっていなければならない。`@` なしはエラー。
-- `@username`（host 省略）はローカルユーザー。
-- `@username@host` は username / host に分割。解析した host が `instance_host` と等しい場合はローカルに正規化する（Misskey はローカルユーザーを `host: null` で保存するため、自ホストを remote host として渡すと失敗する）。
-- lookup path は username lowercase、host lowercase + punycode。display path は API が返した stored 値を使い、常に完全形（`@username@instance_host`）で返す。
-
-## 件数とページネーション
-
-要求 limit は 1..1000 に clamp。1リクエストの page size は 100（Misskey API の上限）。ページネーションは最大 10 ページ。停止条件は件数到達、空ページ（データ尽き）、または日付境界到達。データ尽きは `truncated` にならない。
-
-ページネーションは `untilId`（前回最後のノート）でサーバ側で行う。remote ユーザーの `users/notes` は ID 順で返るため、ID 方式が異なると ID 順 ≠ 時系列順。返却前に `createdAt` 降順に再ソートする。
-
-## エラー
-
-LLM 向けエラーは JSON-RPC の error ではなく `isError: true` のツール結果として返す（`Display` がそのまま文言になる英語）。
-
-- `Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}`
-- `Parameter error: {message}`（handle 不正、`after > before`）
-- `User not found: {handle}`（`NO_SUCH_USER`）
-- `Could not resolve remote user: {handle}`（`FAILED_TO_RESOLVE_REMOTE_USER`）
-- `Full-text search is unavailable (UNAVAILABLE); use the users/notes path`（全文検索ツールは存在しない。`UNAVAILABLE` はフォールバックマップとしてだけ残している）
-- `Rate limit reached. Please retry after a while`（429 は 200ms × 2^n の指数 backoff、最大3リトライ）
-- `Misskey API error ({code}): {message}`
-- `HTTP error: {message}`
-- `Inconsistent API response: {field} is present without its id`
-
-HTTP timeout は 30 秒。closed enum（`Visibility` の 4 値）は `Unknown` variant を持たないので、Misskey が値を追加すると解析失敗で落ちる。
-
-## 構成
-
-```
-src/
-  main.rs        エントリポイント（transport で分岐）
-  cli.rs         引数 parse
-  config.rs      env 検証
-  params.rs      ツール引数と limit 定数
-  dates.rs       ISO 8601 厳格 parse
-  handle.rs      handle 解析と正規化
-  errors.rs      LLM 向けエラー
-  misskey/       API 応答の型（model）と HTTP client
-  view.rs        LLM に返す型（view）
-  tools/         3ツールの実装
-  service.rs     rmcp の tool router
-  sse.rs         HTTP + SSE サーバー（自前実装）
-tests/
-  unit.rs        日付・handle・CLI 引数のケース表
-  integration.rs wiremock（ページネーション、view の JSON shape、relation 状態）
-```
-
+### テストの実行
+ユニットテストおよび統合テストを実行して動作を確認できます。
 ```sh
 cargo test
 ```
 
-## 実装上の挙動
-
-- `createdAt` は Misskey がノート ID から導出する値（DB カラムではない）。解析に失敗したノートは個別 skip せず応答全体を失敗させる。非準拠実装（Mastodon snowflake 等）はスコープ外。
-- `text` は pack 時に書き換えられることがある（`note.name && (note.url ?? note.uri)` の条件）。stored 値と view 値が異なる。
-- 入れ子 note の detail gate は非対称: `reply` の入れ子は `detail: false`（`poll` が shape に入らない）、`renote` の入れ子は `detail: true`。
-- muting / blocking / channel muting はサーバー側で適用され、適用された結果が返る。
-- `users/notes` は認証ユーザーから見える範囲（自分の `followers` / `specified` を含む）を返す。タイムラインは公開範囲のみ。
-- view は model の mirror ではない。`reactionCount`（derived）、`emojis`、`deletedAt`、`myReaction`、`clippedCount` 等は落としている。
+### 内部構造
+- **トランスポート**: `stdio` (標準) および `SSE` (HTTP) をサポートしています。
+- **実装**: Rust (`rmcp`, `reqwest`) で構築されています。
