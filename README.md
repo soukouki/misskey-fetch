@@ -8,11 +8,32 @@ Rust（rmcp / reqwest / chrono-tz / schemars / serde）。トランスポート�
 
 | 環境変数 | 必須 | 内容 |
 |---|---|---|
-| `MISSKEY_TOKEN` | はい | 読み取り権限のトークン。空だと起動時にエラー |
+| `MISSKEY_TOKEN` | はい | トークン。`type: home` を使うなら `read:account`（UI 表示: アカウントの情報を見る）が必要。空だと起動時にエラー（下記「トークンの権限」） |
 | `MISSKEY_API_URL` | はい | `https://` の API ベース URL。末尾スラッシュは除去。http は拒否、リダイレクトは追わない（token が別 origin に漏れないため） |
 | `TZ` | はい | IANA タイムゾーン名（例 `Asia/Tokyo`）。未設定・不正は起動エラー。chrono-tz は env を自動参照しないので明示 parse する |
 
 `MISSKEY_API_URL` のホスト部は `instance_host` として保持する（lowercase + punycode）。`handle` の host 省略時に使う。
+
+### トークンの権限
+
+Misskey の権限（`kind`）はエンドポイントごとに決まっている。このサーバーが呼ぶ endpoint と、トークンに必要な権限:
+
+| endpoint | 必要な権限 |
+|---|---|
+| `notes/timeline`（`type: home`） | `read:account`（UI 表示: アカウントの情報を見る） |
+| `notes/local-timeline` | なし |
+| `notes/global-timeline` | なし |
+| `users/show` | なし |
+| `users/notes` | なし |
+| `i`（handle 省略時） | `read:account`（UI 表示: アカウントの情報を見る） |
+
+権限が足りないトークンで呼ぶと Misskey は 403 の `PERMISSION_DENIED`（`Your app does not have the necessary permissions to use this endpoint.`）を返す。LLM には `Misskey API error (PERMISSION_DENIED): ...` として出る。
+
+`read:account` はホームタイムライン（フォロー中ユーザーのノート）を見る権限なので、`type: home` を使うなら実質必須。`local` / `global` だけなら権限なしのトークンで動く。書き込み権限は不要（書き込み endpoint は呼ばない）。
+
+Misskey Web の「設定 > API」で発行したトークンは全権限を持つ。アプリ（MiAuth / OAuth）経由のトークンは認可時に選んだ権限だけ持つ。
+
+`handle` を省略したツールは「自分が誰か」を知る必要がある。`users/show` は `userId` / `userIds` / `username` のいずれか必須、`users/notes` は `userId` 必須で、me へのフォールバックがない。したがって認証ユーザーを指す endpoint は `i` だけであり、handle 省略の分岐は構造的に unavoidable。`i` は `read:account` の kind なので、handle 省略を使うなら権限ゼロのトークンでは動かない（`local` / `global` だけなら動く）。
 
 ```sh
 cargo run --locked
@@ -27,6 +48,19 @@ docker build -t misskey-fetch .
 docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
 docker run -d --rm -p 8080:8080 -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch --transport sse --host 0.0.0.0 --port 8080
 ```
+
+Dockerfile は2つある（どちらも distroless/static-debian12:nonroot に static musl バイナリを入れ、`USER nonroot` で ENTRYPOINT）:
+
+- `Dockerfile`: build context のソースを COPY（通常のローカルビルド）
+- `Dockerfile.git`: `git clone` 前提。build context にソースがない環境用。ビルド時にネットワークが必要（github への clone + crates.io）
+
+```sh
+docker build -f Dockerfile.git -t misskey-fetch .
+docker build -f Dockerfile.git --build-arg REF=v0.1.0 -t misskey-fetch .
+docker build -f Dockerfile.git --build-arg REPO_URL=https://example.com/mirror.git --build-arg REF=main -t misskey-fetch .
+```
+
+`REPO_URL` の既定は origin（`https://github.com/soukouki/misskey-fetch.git`）。`REF` は branch / tag（commit SHA は `git clone --branch` で指定できない）。
 
 stdio では stdout は JSON-RPC のみ。ログ（起動情報、429 の backoff、SSE セッションの開閉）は stderr。token は stderr にも出さない。
 
@@ -99,7 +133,7 @@ MISSKEY_TOKEN=... MISSKEY_API_URL=https://misskey.io/api TZ=Asia/Tokyo \
 |---|---|---|
 | `handle` | 認証ユーザー | `@username` または `@username@host` |
 
-`users/show`（handle 省略時は `users/me`）でユーザーを解決し、`users/notes`（limit 10）をもう一度呼んで `recentNotes` を埋める。ページラッパーなしで `{user, description, pinnedNotes, recentNotes}` を返す。
+`users/show`（handle 省略時は `i`。`i` は `read:account` が必要）でユーザーを解決し、`users/notes`（limit 10）をもう一度呼んで `recentNotes` を埋める。ページラッパーなしで `{user, description, pinnedNotes, recentNotes}` を返す。
 
 ### `get_user_notes`
 
@@ -111,7 +145,7 @@ MISSKEY_TOKEN=... MISSKEY_API_URL=https://misskey.io/api TZ=Asia/Tokyo \
 | `limit` | 100 | 1..1000 に clamp |
 | `includeRenotes` | true | |
 
-`after > before` はエラー。呼ぶ endpoint: `users/notes`（`sinceDate` / `untilDate` は epoch ms）。
+`after > before` はエラー。呼ぶ endpoint: `users/notes`（`sinceDate` / `untilDate` は epoch ms）。handle 省略時は `i`（`read:account`）で userId を解決してから呼ぶ。
 
 ## 応答の形
 
