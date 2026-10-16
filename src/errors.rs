@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::dates::DateError;
+use crate::handle::HandleError;
 
 /// LLM 向けエラー（spec 6.2.3 / design「errors.rs」）。
 ///
@@ -35,6 +36,14 @@ pub enum ToolError {
 impl From<DateError> for ToolError {
     fn from(err: DateError) -> Self {
         Self::InvalidDate { input: err.input }
+    }
+}
+
+impl From<HandleError> for ToolError {
+    fn from(err: HandleError) -> Self {
+        Self::InvalidParams {
+            message: err.to_string(),
+        }
     }
 }
 

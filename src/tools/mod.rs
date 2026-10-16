@@ -4,41 +4,66 @@ use serde_json::{json, Value};
 use crate::config::Config;
 use crate::dates::parse_iso8601;
 use crate::errors::ToolError;
-use crate::handle::{handle_string, normalize_user_ref};
+use crate::handle::{handle_string, resolve_user_ref};
 use crate::misskey::client::Client;
-use crate::misskey::types::{self, NoteWithUser, RawNote, RawUser, UserWithNotes};
+use crate::misskey::types::{self, NoteWithUser, NotesPage, RawNote, RawUser, UserWithNotes};
 use crate::params::{
-    API_MAX_LIMIT, DEFAULT_TIMELINE_LIMIT, DEFAULT_USER_NOTES_LIMIT, MAX_PAGES, RECENT_NOTES_LIMIT,
-    TimelineType, clamp_limit, GetTimelineParams, GetUserNotesParams, GetUserParams,
+    API_MAX_LIMIT, DEFAULT_TIMELINE_LIMIT, DEFAULT_USER_NOTES_LIMIT, MAX_PAGES, MAX_TOTAL_LIMIT,
+    RECENT_NOTES_LIMIT, TimelineType, clamp_limit, GetTimelineParams, GetUserNotesParams, GetUserParams,
 };
 
-/// `get_timeline`（spec 5.1）
+/// `get_timeline`（spec 5.1）。ページ単位で `untilId` によりサーバ側ページネーションする。
 pub async fn get_timeline(
     client: &Client,
     cfg: &Config,
     p: &GetTimelineParams,
-) -> Result<Vec<NoteWithUser>, ToolError> {
+) -> Result<NotesPage, ToolError> {
     let timeline_type = p.r#type.unwrap_or_default();
     let endpoint = match timeline_type {
         TimelineType::Home => "notes/timeline",
         TimelineType::Local => "notes/local-timeline",
         TimelineType::Global => "notes/global-timeline",
     };
-    let limit = clamp_limit(p.limit, DEFAULT_TIMELINE_LIMIT);
-    let body = json!({ "limit": limit });
-    let value = client.call(endpoint, &body, "").await?;
-    let notes = as_notes(&value)?;
+    let requested = p.limit.unwrap_or(DEFAULT_TIMELINE_LIMIT);
+    let effective = clamp_limit(p.limit, DEFAULT_TIMELINE_LIMIT);
 
-    let mut views: Vec<NoteWithUser> = notes
-        .iter()
-        .map(|n| types::to_view(n, None, &cfg.instance_host))
-        .collect();
-    // Misskey は ID 順で返す。createdAt 降順で返却する（spec 5.1）
-    types::sort_desc(&mut views);
-    Ok(views)
+    let mut collected: Vec<RawNote> = Vec::new();
+    let mut until_id: Option<String> = None;
+    let mut pages_used: u32 = 0;
+
+    for _ in 0..MAX_PAGES {
+        if collected.len() >= effective as usize {
+            break; // 停止条件: 件数到達
+        }
+        pages_used += 1;
+        let page_size = (effective as usize - collected.len()).min(API_MAX_LIMIT as usize);
+        let mut body = json!({ "limit": page_size });
+        if let Some(id) = &until_id {
+            body["untilId"] = json!(id);
+        }
+
+        let value = client.call(endpoint, &body, "").await?;
+        let page = as_notes(&value)?;
+        if page.is_empty() {
+            break; // 停止条件: 空ページ
+        }
+        for note in &page {
+            if collected.len() >= effective as usize {
+                break;
+            }
+            collected.push(note.clone());
+        }
+        if collected.len() >= effective as usize {
+            break; // 停止条件: 件数到達
+        }
+        until_id = page.last().map(|n| n.id.clone());
+    }
+
+    let stats = page_stats(requested, effective, collected.len(), pages_used, false);
+    Ok(build_page(&mut collected, None, &cfg.instance_host, &stats))
 }
 
-/// `get_user_info`（spec 5.2）
+/// `get_user_info`（spec 5.2）。User object をそのまま返す（ページラッパーなし）。
 pub async fn get_user_info(
     client: &Client,
     cfg: &Config,
@@ -50,35 +75,24 @@ pub async fn get_user_info(
     // recentNotes は users/notes (limit 10) の追加呼び出しで埋める（spec 4.3）
     let body = json!({ "userId": user.id, "limit": RECENT_NOTES_LIMIT });
     let value = client.call("users/notes", &body, &handle).await?;
-    let notes = as_notes(&value)?;
-
-    let mut recent: Vec<NoteWithUser> = notes
-        .iter()
-        .map(|n| types::to_view(n, Some(&user), &cfg.instance_host))
-        .collect();
-    types::sort_desc(&mut recent);
-
-    let pinned: Vec<NoteWithUser> = user
-        .pinned_notes
-        .iter()
-        .map(|n| types::to_view(n, Some(&user), &cfg.instance_host))
-        .collect();
+    let mut recent_raw = as_notes(&value)?;
+    types::sort_desc(&mut recent_raw);
 
     Ok(UserWithNotes {
         name: user.name.clone(),
         handle,
         description: user.description.clone(),
-        pinned_notes: pinned,
-        recent_notes: recent,
+        pinned_notes: views(&user.pinned_notes, Some(&user), &cfg.instance_host),
+        recent_notes: views(&recent_raw, Some(&user), &cfg.instance_host),
     })
 }
 
-/// `get_user_notes`（spec 5.3）
+/// `get_user_notes`（spec 5.3）。ページ単位で `untilId` によりサーバ側ページネーションする。
 pub async fn get_user_notes(
     client: &Client,
     cfg: &Config,
     p: &GetUserNotesParams,
-) -> Result<Vec<NoteWithUser>, ToolError> {
+) -> Result<NotesPage, ToolError> {
     let user = resolve_user(client, cfg, p.username.as_deref(), p.host.as_deref()).await?;
     let handle = types::handle_of(&user, &cfg.instance_host);
 
@@ -98,19 +112,21 @@ pub async fn get_user_notes(
         });
     }
 
-    let limit = clamp_limit(p.limit, DEFAULT_USER_NOTES_LIMIT);
+    let requested = p.limit.unwrap_or(DEFAULT_USER_NOTES_LIMIT);
+    let effective = clamp_limit(p.limit, DEFAULT_USER_NOTES_LIMIT);
     let include_renotes = p.include_renotes.unwrap_or(true);
-    let has_range = after.is_some() || before.is_some();
-    let max_pages = if has_range { MAX_PAGES } else { 1 };
 
     let mut collected: Vec<RawNote> = Vec::new();
     let mut until_id: Option<String> = None;
+    let mut pages_used: u32 = 0;
+    let mut hit_boundary = false;
 
-    for _ in 0..max_pages {
-        if collected.len() >= limit as usize {
-            break;
+    for _ in 0..MAX_PAGES {
+        if collected.len() >= effective as usize {
+            break; // 停止条件: 件数到達
         }
-        let page_size = (limit as usize - collected.len()).min(API_MAX_LIMIT as usize);
+        pages_used += 1;
+        let page_size = (effective as usize - collected.len()).min(API_MAX_LIMIT as usize);
         let mut body = json!({
             "userId": user.id,
             "limit": page_size,
@@ -133,9 +149,8 @@ pub async fn get_user_notes(
             break; // 停止条件: 空ページ
         }
 
-        let mut hit_boundary = false;
         for note in &page {
-            if collected.len() >= limit as usize {
+            if collected.len() >= effective as usize {
                 break;
             }
             if types::in_range(note, after, before) {
@@ -145,26 +160,77 @@ pub async fn get_user_notes(
             }
         }
 
-        if collected.len() >= limit as usize || hit_boundary {
+        if collected.len() >= effective as usize || hit_boundary {
             break; // 停止条件: 件数到達 / 境界到達
         }
         until_id = page.last().map(|n| n.id.clone());
     }
 
-    let mut views: Vec<NoteWithUser> = collected
-        .iter()
-        .map(|n| types::to_view(n, Some(&user), &cfg.instance_host))
-        .collect();
-    types::sort_desc(&mut views);
-    Ok(views)
+    let stats = page_stats(requested, effective, collected.len(), pages_used, hit_boundary);
+    Ok(build_page(&mut collected, Some(&user), &cfg.instance_host, &stats))
 }
 
 /// 返ってきた件数を `createdAt` で厳密検証して範囲外を落とす（spec 6.1.5）。
 fn past_boundary(note: &RawNote, after: Option<DateTime<Utc>>) -> bool {
-    let Some(created) = types::created_at(note) else {
-        return false;
-    };
-    after.is_some_and(|a| created <= a)
+    after.is_some_and(|a| note.created_at <= a)
+}
+
+/// `truncated` は、要求 limit が 1000 に clamp された場合、またはページ / 境界が
+/// 要求件数を満たす前に停止した場合（空ページ=データ尽きは除く）。
+fn page_stats(
+    requested: u32,
+    effective: u32,
+    collected: usize,
+    pages_used: u32,
+    hit_boundary: bool,
+) -> PageStats {
+    let clamped = requested > MAX_TOTAL_LIMIT;
+    let short = (collected as u32) < effective;
+    PageStats {
+        requested,
+        collected: collected as u32,
+        truncated: clamped || (short && (hit_boundary || pages_used >= MAX_PAGES)),
+    }
+}
+
+struct PageStats {
+    requested: u32,
+    collected: u32,
+    truncated: bool,
+}
+
+fn build_page(
+    collected: &mut [RawNote],
+    fallback: Option<&RawUser>,
+    instance_host: &str,
+    stats: &PageStats,
+) -> NotesPage {
+    types::sort_desc(collected);
+    let notes = views(collected, fallback, instance_host);
+    let next_cursor = stats.truncated.then(|| collected.last().map(|n| n.id.clone())).flatten();
+    let message = stats.truncated.then(|| {
+        let base = format!(
+            "Showing {} notes of {} requested; the rest is omitted.",
+            stats.collected, stats.requested
+        );
+        match &next_cursor {
+            Some(id) => format!("{base} Call again with untilId=\"{id}\" to continue."),
+            None => base,
+        }
+    });
+    NotesPage {
+        notes,
+        truncated: stats.truncated,
+        next_cursor,
+        message,
+    }
+}
+
+fn views(collected: &[RawNote], fallback: Option<&RawUser>, instance_host: &str) -> Vec<NoteWithUser> {
+    collected
+        .iter()
+        .map(|n| types::to_view(n, fallback, instance_host))
+        .collect()
 }
 
 async fn resolve_user(
@@ -185,16 +251,10 @@ async fn resolve_user(
         });
     };
 
-    let r = normalize_user_ref(raw).ok_or_else(|| ToolError::InvalidParams {
-        message: "Cannot parse username".to_string(),
-    })?;
-    let host = r
-        .host
-        .clone()
-        .or_else(|| host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()));
-    // `@user@host` を username フィールドにそのまま渡してはいけない（spec 5.2）
-    let body = json!({ "username": r.username, "host": host });
-    let handle = handle_string(&r.username, host.as_deref().unwrap_or(&cfg.instance_host));
+    // username に埋め込まれた host と明示 host 引数の同時指定はエラー（spec 5.2）
+    let r = resolve_user_ref(raw, host)?;
+    let body = json!({ "username": r.username, "host": r.host });
+    let handle = handle_string(&r, &cfg.instance_host);
 
     let value = client.call("users/show", &body, &handle).await?;
     serde_json::from_value::<RawUser>(value).map_err(|e| ToolError::Http {
@@ -207,4 +267,3 @@ fn as_notes(value: &Value) -> Result<Vec<RawNote>, ToolError> {
         message: e.to_string(),
     })
 }
-

@@ -1,7 +1,10 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+/// 1リクエストの page size（Misskey API の上限）
 pub const API_MAX_LIMIT: u32 = 100;
+/// 要求 limit は 1..1000 に clamp（doc/decisions.md）
+pub const MAX_TOTAL_LIMIT: u32 = 1000;
 pub const DEFAULT_TIMELINE_LIMIT: u32 = 20;
 pub const DEFAULT_USER_NOTES_LIMIT: u32 = 100;
 pub const RECENT_NOTES_LIMIT: u32 = 10;
@@ -54,6 +57,7 @@ pub struct GetUserNotesParams {
     pub include_renotes: Option<bool>,
 }
 
+/// 要求 limit は 1..MAX_TOTAL_LIMIT に clamp。1リクエストの page size は API_MAX_LIMIT。
 pub fn clamp_limit(limit: Option<u32>, default: u32) -> u32 {
-    limit.unwrap_or(default).clamp(1, API_MAX_LIMIT)
+    limit.unwrap_or(default).clamp(1, MAX_TOTAL_LIMIT)
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chrono = "0.4.45"
+chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = "0.10.4"
 reqwest = { version = "0.13.5", features = ["json"] }
 rmcp = { version = "3.5.1", features = ["transport-io"] }

@@ -2,9 +2,9 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZon
 use chrono_tz::Tz;
 use thiserror::Error;
 
-/// 解析不能・不正日付を LLM に返す文言（spec 6.2.3）。
+/// 解析不能・不正日付を LLM に返す文言（spec 6.2.3）。ToolError::InvalidDate と同一の英語。
 #[derive(Debug, Error)]
-#[error("具体的な日付（YYYY-MM-DD形式）で再指定してください: {input}")]
+#[error("Invalid date. Please re-specify as a concrete date in YYYY-MM-DD format: {input}")]
 pub struct DateError {
     pub input: String,
 }
@@ -21,6 +21,11 @@ impl DateError {
 ///
 /// - 日付のみ（`YYYY-MM-DD`）: `TZ` の 0 時境界として扱う
 /// - オフセット付き（`Z` / `+09:00`）: そのまま尊重する
+/// - オフセットなしの時刻: `TZ` の壁時計時刻として扱う（決定済み。以前は拒否）
+/// - 小数秒は任意桁数（`.1`, `.123`, `.123456`）。9桁超は nanosecond 分解能で切り捨て
+///
+/// 拒否: 月日1桁、不正日付、範囲外（`25:00:00` / `12:60:00` / leap second `:60`）、
+/// slash 区切り、相対表現、basic format、週日付、space 区切り、reduced precision。
 pub fn parse_iso8601(input: &str, tz: Tz) -> Result<DateTime<Utc>, DateError> {
     let invalid = || DateError::new(input);
 
@@ -38,8 +43,11 @@ pub fn parse_iso8601(input: &str, tz: Tz) -> Result<DateTime<Utc>, DateError> {
 
     let rest = &input[10..];
     if rest.is_empty() {
-        let naive = date.and_time(NaiveTime::MIN);
-        let local = tz.from_local_datetime(&naive).latest().ok_or_else(invalid)?;
+        // DST 曖昧・非存在は latest()（決定済み）
+        let local = tz
+            .from_local_datetime(&date.and_time(NaiveTime::MIN))
+            .latest()
+            .ok_or_else(invalid)?;
         return Ok(local.with_timezone(&Utc));
     }
 
@@ -64,23 +72,28 @@ pub fn parse_iso8601(input: &str, tz: Tz) -> Result<DateTime<Utc>, DateError> {
         while end < rest.len() && rest.as_bytes()[end].is_ascii_digit() {
             end += 1;
         }
-        let digits = end - start;
-        if digits == 0 || digits > 3 {
+        if end == start {
             return Err(invalid());
         }
-        nano = rest[start..end].parse::<u32>().map_err(|_| invalid())?;
-        for _ in 0..(9 - digits) {
+        // 任意桁数。chrono の nanosecond 分解能を超える桁は切り捨て（ISO 8601 の慣例）
+        let digits = rest.get(start..end.min(start + 9)).ok_or_else(invalid)?;
+        nano = digits.parse::<u32>().map_err(|_| invalid())?;
+        for _ in 0..(9 - digits.len()) {
             nano *= 10;
         }
         idx = end;
     }
 
-    let offset = match rest.as_bytes().get(idx) {
+    let time = NaiveTime::from_hms_nano_opt(hour, minute, second, nano).ok_or_else(invalid)?;
+    let naive = NaiveDateTime::new(date, time);
+
+    let explicit_offset = match rest.as_bytes().get(idx) {
+        None => None,
         Some(&b'Z') => {
             if idx + 1 != rest.len() {
                 return Err(invalid());
             }
-            FixedOffset::east_opt(0).ok_or_else(invalid)?
+            Some(FixedOffset::east_opt(0).ok_or_else(invalid)?)
         }
         Some(&b'+') | Some(&b'-') => {
             if idx + 6 != rest.len() {
@@ -95,26 +108,28 @@ pub fn parse_iso8601(input: &str, tz: Tz) -> Result<DateTime<Utc>, DateError> {
             if off_hour > 23 || off_min > 59 {
                 return Err(invalid());
             }
-            FixedOffset::east_opt(sign * (off_hour as i32 * 60 + off_min as i32) * 60)
-                .ok_or_else(invalid)?
+            Some(
+                FixedOffset::east_opt(sign * (off_hour as i32 * 60 + off_min as i32) * 60)
+                    .ok_or_else(invalid)?,
+            )
         }
         _ => return Err(invalid()),
     };
 
-    let time = NaiveTime::from_hms_nano_opt(hour, minute, second, nano).ok_or_else(invalid)?;
-    let naive = NaiveDateTime::new(date, time);
-    let dt = naive
-        .and_local_timezone(offset)
-        .single()
-        .ok_or_else(invalid)?;
-    Ok(dt.with_timezone(&Utc))
-}
-
-/// Misskey API が返す `createdAt`（常に UTC の ISO 8601）を再検証用に解析する。
-pub fn parse_created_at(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&Utc))
-        .ok()
+    let dt = match explicit_offset {
+        Some(off) => naive
+            .and_local_timezone(off)
+            .single()
+            .ok_or_else(invalid)?
+            .with_timezone(&Utc),
+        // オフセットなし = TZ の壁時計時刻（DST 曖昧・非存在は latest()）
+        None => tz
+            .from_local_datetime(&naive)
+            .latest()
+            .ok_or_else(invalid)?
+            .with_timezone(&Utc),
+    };
+    Ok(dt)
 }
 
 fn number(s: &str, start: usize, len: usize) -> Option<u32> {
