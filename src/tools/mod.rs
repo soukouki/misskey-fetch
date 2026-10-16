@@ -239,7 +239,9 @@ fn views(collected: &[Note], instance_host: &str) -> Result<Vec<crate::view::Not
 
 async fn resolve_user(client: &Client, cfg: &Config, handle: Option<&str>) -> Result<UserDetailed, ToolError> {
     let Some(raw) = handle.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-        let value = client.call("users/me", &json!({}), "").await?;
+        // 現行 Misskey に `users/me` はない（endpoint-list に未登録）。自分の情報は `i`。
+        // `i` は kind: 'read:account' なので read:account 権限がないトークンは PERMISSION_DENIED。
+        let value = client.call("i", &json!({}), "").await?;
         return serde_json::from_value::<UserDetailed>(value).map_err(|e| ToolError::Http {
             message: e.to_string(),
         });

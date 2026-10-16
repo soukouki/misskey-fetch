@@ -18,7 +18,7 @@ fn cfg(base: &str) -> Config {
     }
 }
 
-/// `users/show` / `users/me` の応答は常に `UserDetailed` shape（spec 4.1）。
+/// `users/show` / `i` の応答は常に `UserDetailed` shape（spec 4.1）。
 fn user(id: &str, username: &str, host: Option<&str>) -> Value {
     json!({
         "id": id,
@@ -117,7 +117,7 @@ async fn get_user_notes_passes_date_boundaries_and_reverifies_created_at() {
 async fn limit_is_clamped_to_page_size() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/users/me"))
+        .and(path("/api/i"))
         .respond_with(ResponseTemplate::new(200).set_body_json(user("u1", "me", None)))
         .mount(&server)
         .await;
