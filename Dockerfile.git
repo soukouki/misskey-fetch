@@ -6,11 +6,9 @@ FROM rust:1.99-alpine AS build
 RUN apk add --no-cache git ca-certificates musl-dev
 
 ARG REPO_URL=https://github.com/soukouki/misskey-fetch.git
-# branch / tag。commit SHA は --branch で指定できない
-ARG REF=main
 
 WORKDIR /src
-RUN git clone --depth 1 --single-branch --branch "$REF" "$REPO_URL" .
+RUN git clone --depth 1 "$REPO_URL" .
 
 # Cargo.lock を使う（--locked）。MSRV: uuid 1.28.0 が rustc 1.89.0 要求
 RUN cargo install --path . --root /out --locked
