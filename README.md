@@ -13,7 +13,14 @@ LLM が Misskey のタイムラインやユーザー情報を取得するため�
 ```sh
 docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch
 ```
-※ SSE モードで起動する場合は `--transport sse --host 0.0.0.0 --port 8080` などの引数を追加してください。
+HTTP モードで起動する場合は `--transport` に `http`（streamable HTTP）または `sse`（レガシー）を指定します。
+
+```sh
+docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch \
+  --transport http --host 0.0.0.0 --port 8080 --allowed-host misskey-fetch
+```
+
+streamable HTTP は `Host` ヘッダーの検証（DNS rebinding 対策）で、既定ではループバックからのリクエストのみ受け付けます。コンテナ名や独自ホストでアクセスする場合は `--allowed-host` でホスト名を追加してください（複数回指定可）。URL のパスは問いません（慣例的に `/mcp`）。
 
 #### Cargo でビルドする場合
 ```sh
@@ -44,6 +51,18 @@ Claude Desktop などの設定ファイルに以下のように追加します�
         "MISSKEY_API_URL": "https://your-instance.sstable/api",
         "TZ": "Asia/Tokyo"
       }
+    }
+  }
+}
+```
+
+HTTP モードの場合、Pi などのクライアントは streamable HTTP の URL を使います（レガシー SSE の `/sse` はサポートされていないクライアントが多い点に注意）。
+
+```json
+{
+  "mcpServers": {
+    "misskey": {
+      "url": "http://misskey-fetch:8080/mcp"
     }
   }
 }
@@ -96,5 +115,5 @@ cargo test
 ```
 
 ### 内部構造
-- **トランスポート**: `stdio` (標準) および `SSE` (HTTP) をサポートしています。
+- **トランスポート**: `stdio` (既定)、`http` (streamable HTTP)、`sse` (レガシー HTTP+SSE) をサポートしています。
 - **実装**: Rust (`rmcp`, `reqwest`) で構築されています。

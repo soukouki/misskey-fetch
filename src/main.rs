@@ -24,10 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     eprintln!(
         "misskey-fetch: transport={} api_base={} tz={}",
-        match cli.transport {
-            TransportKind::Stdio => "stdio",
-            TransportKind::Sse => "sse",
-        },
+        cli.transport.name(),
         config.api_base,
         config.tz
     );
@@ -43,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             server.waiting().await?;
         }
         TransportKind::Sse => misskey_fetch::sse::serve(config, &cli.host, cli.port).await?,
+        TransportKind::Http => misskey_fetch::http::serve(config, &cli).await?,
     }
     Ok(())
 }

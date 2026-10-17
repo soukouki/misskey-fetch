@@ -3,6 +3,7 @@ pub mod config;
 pub mod dates;
 pub mod errors;
 pub mod handle;
+pub mod http;
 pub mod misskey;
 pub mod params;
 pub mod service;
