@@ -2,8 +2,6 @@ use thiserror::Error;
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8080;
-/// streamable HTTP の既定の `Host` 許可リスト（DNS rebinding 対策）
-pub const DEFAULT_ALLOWED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
@@ -37,15 +35,13 @@ pub struct Cli {
     pub transport: TransportKind,
     pub host: String,
     pub port: u16,
-    /// `Host` 検証の許可リスト（http でのみ有効）
-    pub allowed_hosts: Vec<String>,
     /// `--host` / `--port` が stdio で渡された（stdio では効かない）
     pub ignored_bind: bool,
 }
 
 #[derive(Debug, Error)]
 pub enum CliError {
-    #[error("usage: misskey-fetch [--transport stdio|sse|http] [--host <addr>] [--port <port>] [--allowed-host <host>]\n\n  --transport      stdio (default) | sse | http (streamable HTTP)\n  --host           HTTP bind address (default 127.0.0.1)\n  --port           HTTP port (default 8080)\n  --allowed-host   Host allowlist entry, repeatable (http only). Default is\n                   loopback only\n  -h, --help       show this")]
+    #[error("usage: misskey-fetch [--transport stdio|sse|http] [--host <addr>] [--port <port>]\n\n  --transport      stdio (default) | sse | http (streamable HTTP)\n  --host           HTTP bind address (default 127.0.0.1)\n  --port           HTTP port (default 8080)\n  -h, --help       show this")]
     Help,
     #[error("missing value for {flag}")]
     MissingValue { flag: String },
@@ -62,7 +58,6 @@ pub fn parse(args: &[String]) -> Result<Cli, CliError> {
     let mut transport = TransportKind::Stdio;
     let mut host = DEFAULT_HOST.to_string();
     let mut port = DEFAULT_PORT;
-    let mut allowed_hosts: Vec<String> = Vec::new();
     let mut bind_given = false;
 
     let mut it = args.iter();
@@ -91,10 +86,6 @@ pub fn parse(args: &[String]) -> Result<Cli, CliError> {
                 port = value.parse::<u16>().map_err(|_| CliError::InvalidPort { value })?;
                 bind_given = true;
             }
-            "--allowed-host" => {
-                let value = take(&mut it, flag, inline)?;
-                allowed_hosts.push(value.trim().to_ascii_lowercase());
-            }
             other => return Err(CliError::Unknown {
                 arg: other.to_string(),
             }),
@@ -105,7 +96,6 @@ pub fn parse(args: &[String]) -> Result<Cli, CliError> {
         transport,
         host,
         port,
-        allowed_hosts,
         ignored_bind: bind_given && transport == TransportKind::Stdio,
     })
 }

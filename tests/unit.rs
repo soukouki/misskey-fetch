@@ -2,7 +2,6 @@ use chrono_tz::Tz;
 use serde_json::json;
 
 use misskey_fetch::cli::{parse, CliError, TransportKind};
-use misskey_fetch::http::allowed_hosts;
 use misskey_fetch::dates::parse_iso8601;
 use misskey_fetch::errors::ToolError;
 use misskey_fetch::config::{host_of, normalize_api_base, Config};
@@ -221,44 +220,22 @@ fn cli_accepts_sse_with_host_and_port() {
 }
 
 #[test]
-fn cli_accepts_http_transport_with_allowed_hosts() {
-    let cli = parse(&args(&[
-        "--transport",
-        "http",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "9293",
-        "--allowed-host",
-        "Misskey-Fetch",
-    ]))
-    .expect("ok");
+fn cli_accepts_http_transport() {
+    let cli = parse(&args(&["--transport", "http", "--host", "0.0.0.0", "--port", "9293"])).expect("ok");
     assert_eq!(cli.transport, TransportKind::Http);
     assert_eq!(cli.host, "0.0.0.0");
     assert_eq!(cli.port, 9293);
-    assert_eq!(cli.allowed_hosts, vec!["misskey-fetch"]);
     assert!(!cli.ignored_bind);
 
     // alias と `--flag=value` 形式
-    let eq = parse(&args(&["--transport=streamable-http", "--allowed-host=example.test"])).expect("ok");
+    let eq = parse(&args(&["--transport=streamable-http"])).expect("ok");
     assert_eq!(eq.transport, TransportKind::Http);
-    assert_eq!(eq.allowed_hosts, vec!["example.test"]);
 
-    // 既定（ループバック）は http 側で加えるので、CLI 側は空
-    assert!(parse(&args(&["--transport", "http"])).expect("ok").allowed_hosts.is_empty());
-}
-
-#[test]
-fn http_allowed_hosts_are_loopback_plus_extras() {
-    let cli = parse(&args(&["--transport", "http", "--allowed-host", "misskey-fetch"])).expect("ok");
-    assert_eq!(
-        allowed_hosts(&cli),
-        vec!["localhost", "127.0.0.1", "::1", "misskey-fetch"]
-    );
-    assert_eq!(
-        allowed_hosts(&parse(&args(&["--transport", "http"])).expect("ok")),
-        vec!["localhost", "127.0.0.1", "::1"]
-    );
+    // Host 検証は既定で無効（オプションなし）
+    assert!(matches!(
+        parse(&args(&["--transport", "http", "--allowed-host", "x"])),
+        Err(CliError::Unknown { .. })
+    ));
 }
 
 #[test]

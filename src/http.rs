@@ -7,8 +7,7 @@
 //! - `GET`    → セッションに紐づく SSE ストリーム
 //! - `DELETE` → セッションクローズ
 //!
-//! `Host` 検証（DNS rebinding 対策）は rmcp の既定ではループバックのみ。
-//! コンテナ名や公開ホストでアクセスする場合は `--allowed-host` で追加する。
+//! `Host` 検証（DNS rebinding 対策）は既定で無効。任意の Host を受け付ける。
 
 use std::sync::Arc;
 
@@ -20,7 +19,7 @@ use rmcp::transport::streamable_http_server::{
 use tokio::net::TcpListener;
 use tower_service::Service;
 
-use crate::cli::{Cli, DEFAULT_ALLOWED_HOSTS};
+use crate::cli::Cli;
 use crate::config::Config;
 use crate::service::MisskeyService;
 
@@ -29,10 +28,8 @@ const MAX_BODY_BYTES: usize = 1 << 20;
 pub async fn serve(config: Config, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind((cli.host.as_str(), cli.port)).await?;
     eprintln!(
-        "misskey-fetch: http listening on http://{}:{} (allowed hosts: {})",
-        cli.host,
-        cli.port,
-        allowed_hosts(cli).join(", ")
+        "misskey-fetch: http listening on http://{}:{} (any Host accepted)",
+        cli.host, cli.port
     );
 
     let service = StreamableHttpService::new(
@@ -42,7 +39,7 @@ pub async fn serve(config: Config, cli: &Cli) -> Result<(), Box<dyn std::error::
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default()
             .with_max_request_body_bytes(MAX_BODY_BYTES)
-            .with_allowed_hosts(allowed_hosts(cli)),
+            .disable_allowed_hosts(),
     );
 
     loop {
@@ -62,14 +59,4 @@ pub async fn serve(config: Config, cli: &Cli) -> Result<(), Box<dyn std::error::
             }
         });
     }
-}
-
-pub fn allowed_hosts(cli: &Cli) -> Vec<String> {
-    let mut hosts: Vec<String> = DEFAULT_ALLOWED_HOSTS.iter().map(|h| h.to_string()).collect();
-    for host in &cli.allowed_hosts {
-        if !hosts.contains(host) {
-            hosts.push(host.clone());
-        }
-    }
-    hosts
 }

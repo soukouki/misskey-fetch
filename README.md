@@ -17,10 +17,10 @@ HTTP モードで起動する場合は `--transport` に `http`（streamable HTT
 
 ```sh
 docker run -i --rm -e MISSKEY_TOKEN -e MISSKEY_API_URL -e TZ misskey-fetch \
-  --transport http --host 0.0.0.0 --port 8080 --allowed-host misskey-fetch
+  --transport http --host 0.0.0.0 --port 8080
 ```
 
-streamable HTTP は `Host` ヘッダーの検証（DNS rebinding 対策）で、既定ではループバックからのリクエストのみ受け付けます。コンテナ名や独自ホストでアクセスする場合は `--allowed-host` でホスト名を追加してください（複数回指定可）。URL のパスは問いません（慣例的に `/mcp`）。
+`Host` ヘッダーの検証（DNS rebinding 対策）は既定で無効で、任意の Host を受け付けます。URL のパスは問いません（慣例的に `/mcp`）。
 
 #### Cargo でビルドする場合
 ```sh
