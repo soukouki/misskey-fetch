@@ -1,8 +1,7 @@
 # git clone を前提にした multi-stage ビルド（build context にソースがない環境用）
 # ビルド時にネットワークが必要（github への clone + crates.io）。context からの COPY はしない。
+
 FROM rust:1.99-alpine AS build
-# git: clone 用。ca-certificates: https clone。musl-dev: proc-macro crate の動的リンクに
-# 必要（crt1.o/crti.o。公式 rust:alpine イメージには入っていない。build stage 専用）
 RUN apk add --no-cache git ca-certificates musl-dev
 
 ARG REPO_URL=https://github.com/soukouki/misskey-fetch.git
@@ -10,11 +9,10 @@ ARG REPO_URL=https://github.com/soukouki/misskey-fetch.git
 WORKDIR /src
 RUN git clone --depth 1 "$REPO_URL" .
 
-# Cargo.lock を使う（--locked）。MSRV: uuid 1.28.0 が rustc 1.89.0 要求
 RUN cargo install --path . --root /out --locked
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/bin/misskey-fetch /usr/local/bin/misskey-fetch
-# TOKEN / API_URL / TZ はイメージに焼かず実行時 env 注入（TZ に既定はない。未設定は起動エラー）
+
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/misskey-fetch"]
